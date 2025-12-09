@@ -1,0 +1,4 @@
+NODE_ENV=development
+PORT=3000
+
+API_KEY=1234567890
