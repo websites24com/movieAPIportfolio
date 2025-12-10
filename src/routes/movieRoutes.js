@@ -24,6 +24,10 @@ router
 router.get('/popular', movieController.getMostPopularMovies);
 
 // /api/v1/movies/:id
-router.get('/:id', movieController.getMovieById);
+router
+.route('/:id')
+.get(movieController.getMovieById)
+.patch(movieController.updateMovie)
+.delete(movieController.deleteMovie)
 
 module.exports = router;

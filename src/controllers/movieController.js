@@ -11,24 +11,51 @@ const db = require('../config/db');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
-
 // ------------------------------------------------------
 // GET /api/v1/movies
 // Returns ALL movies from the dataset.
 // ------------------------------------------------------
 exports.getAllMovies = catchAsync(async (req, res, next) => {
-   
-    // Query all movies from MySQL
-    const [rows] = await db.query('SELECT * FROM movies');
+  
+    // 1) Read query params and make sure they’re numbers, because Express makes them strings! parseInt(string, radix)  
+  const page = req.query.page ? parseInt(req.query.page, 10) : 1;
+  const limit = req.query.limit ? parseInt(req.query.limit, 10) : 20;
 
-    res.status(200).json({
-        status: 'success',
-        results: rows.length,
-        data: {
-            movies: rows
-        },
-    });
+  if (Number.isNaN(page) || Number.isNaN(limit) || page < 1 || limit < 1) {
+    return next(new AppError('Invalid page or limit parameter', 400));
+  }
+
+  const offset = (page - 1) * limit;
+
+  // 2) Get page of movies
+  const [movies] = await db.query(
+    'SELECT * FROM movies LIMIT ? OFFSET ?',
+    [limit, offset]
+  );
+
+  // 3) Get total count
+  const [countRows] = await db.query(
+    'SELECT COUNT(*) AS total FROM movies'
+  );
+  const total = countRows[0].total;
+  const totalPages = Math.ceil(total / limit);
+
+  // 4) Send response
+  res.status(200).json({
+    status: 'success',
+    results: movies.length,
+    meta: {
+      page,
+      limit,
+      total,
+      totalPages,
+    },
+    data: {
+      movies,
+    },
+  });
 });
+
 
 
 // ------------------------------------------------------
@@ -36,20 +63,44 @@ exports.getAllMovies = catchAsync(async (req, res, next) => {
 // Returns only movies where movie.most_popular === true
 // ------------------------------------------------------
 exports.getMostPopularMovies = catchAsync(async (req, res, next) => {
-   
-    const [rows] = await db.query(
-        'SELECT * FROM movies WHERE most_popular = 1 ORDER BY popularity DESC'
-    )
+  // 1) Read query params and make sure they’re numbers
+  const page = req.query.page ? parseInt(req.query.page, 10) : 1;
+  const limit = req.query.limit ? parseInt(req.query.limit, 10) : 20;
 
-    res.status(200).json({
-        status: 'success',
-        results: rows.length,
-        data: {
-            movies: rows,
-        },
-    });
+  if (Number.isNaN(page) || Number.isNaN(limit) || page < 1 || limit < 1) {
+    return next(new AppError('Invalid page or limit parameter', 400));
+  }
+
+  const offset = (page - 1) * limit;
+
+  // 2) Get paginated most_popular movies, ordered by popularity DESC
+  const [movies] = await db.query(
+    'SELECT * FROM movies WHERE most_popular = 1 ORDER BY popularity DESC LIMIT ? OFFSET ?',
+    [limit, offset]
+  );
+
+  // 3) Get total count of most_popular movies
+  const [countRows] = await db.query(
+    'SELECT COUNT(*) AS total FROM movies WHERE most_popular = 1'
+  );
+  const total = countRows[0].total;
+  const totalPages = Math.ceil(total / limit);
+
+  // 4) Send response
+  res.status(200).json({
+    status: 'success',
+    results: movies.length,
+    meta: {
+      page,
+      limit,
+      total,
+      totalPages,
+    },
+    data: {
+      movies,
+    },
+  });
 });
-
 
 // ------------------------------------------------------
 // GET /api/v1/movies/:id
@@ -165,3 +216,77 @@ const sql = `
     }
   })
   })
+
+
+  // UPDATE
+
+  exports.updateMovie = catchAsync(async(req, res, next) => {
+    const movieId = req.params.id;
+    
+    // 1. Check if movie exists, we must have sth to update 😃
+
+    const[existing] = await db.query('SELECT * FROM movies WHERE id = ?', [movieId]);
+    if (existing.length === 0) {
+        return next(new AppError(`Movie with ID ${movieId} not found`, 404))
+    }
+    // 2. Build UPDATE query dynamically
+    const fields = Object.keys(req.body);
+    if (fields.length === 0) {
+        return next(new AppError('No fields provided to update', 400))
+    }
+
+    const values = Object.values(req.body);
+
+    // Convert genre_ids array _to JSON string if present
+
+    if(req.body.genre_ids) {
+        const idx = fields.indexOf('genre_ids')
+        fields[idx] = 'genre_ids';
+        values[idx] = JSON.stringify(req.body.genre_ids)
+    }
+
+    const sql = `
+    UPDATE movies
+    SET ${fields.map(f => `${f} = ?`).join(', ')}
+    WHERE id = ?`;
+
+    await db.query(sql, [...values, movieId]);
+
+    // 3. Return update movie
+
+    const [updated] = await db.query('SELECT * FROM movies WHERE id = ?', [movieId]);
+
+    res.status(200).json({
+        status: 'success',
+        data: {
+            movie: updated[0]
+        }
+    })
+  })
+
+  // DELETE
+
+  exports.deleteMovie = catchAsync(async(req, res, next) => {
+    const movieId = req.params.id;
+    
+    // 1. Check if movie exists, we must have sth to update 😃
+    
+    const[existing] = await db.query('SELECT * FROM movies WHERE id = ?', [movieId]);
+    if (existing.length === 0) {
+        return next(new AppError(`Movie with ID ${movieId} not found`, 404))
+    }
+
+    // we store movie data before deleting
+
+    const movieToDelete = existing[0]
+
+    const[deleted] = await db.query('DELETE FROM movies WHERE id = ?', [movieId])
+
+    res.status(200).json({
+        status: 'success',
+        data: {
+            message: `The ${movieToDelete.title} with id:${movieToDelete.id} has been deleted!`,
+            
+        }
+    })
+})
