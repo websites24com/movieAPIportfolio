@@ -5,8 +5,11 @@ const helmet = require('helmet')
 const morgan = require('morgan')
 const AppError = require('./utils/appError')
 const globalErrorHandler = require('./controllers/errorController')
-// Routes
 
+// DB
+const db = require('./config/db');
+
+// Routes
 const movieRoutes = require('./routes/movieRoutes')
 
 // Express
@@ -16,6 +19,11 @@ const app = express();
 // HELMET Seucrity headers
 
 app.use(helmet());
+
+// Public files
+
+app.use(express.static('public'));
+
 
 // Parse JSON request bodies (for POST/PUT/PATCH)
 
@@ -35,6 +43,21 @@ app.get('/', (req, res) => {
     version: '1.0.0',
   });
 });
+
+// DB health-check route
+
+app.get('/api/v1/db-check', async (req, res, next) => {
+  try {
+    const [rows] = await db.query('SELECT 1 + 1 AS result');
+    res.json({
+      status: 'success',
+      db: 'connected',
+      result: rows[0].result
+    })
+  } catch (err) {
+    next(err)
+  }
+})
 
 // Mount movie routes under /api/v1/movies
 

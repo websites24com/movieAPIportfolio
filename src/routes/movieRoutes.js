@@ -15,7 +15,10 @@ const router = express.Router();
 router.use(authApiKey)
 
 // /api/v1/movies
-router.get('/', movieController.getAllMovies);
+router
+.route('/')
+.get(movieController.getAllMovies)
+.post(movieController.createMovie)
 
 // /api/v1/movies/popular
 router.get('/popular', movieController.getMostPopularMovies);

@@ -7,8 +7,7 @@
 // handler without crashing the app.
 // ======================================================
 
-const movies = require('../data/movies');
-const movieDetails = require('../data/movieDetails');
+const db = require('../config/db');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
@@ -18,14 +17,15 @@ const catchAsync = require('../utils/catchAsync');
 // Returns ALL movies from the dataset.
 // ------------------------------------------------------
 exports.getAllMovies = catchAsync(async (req, res, next) => {
-    // In a real API this would be a DB query like:
-    // const movies = await Movie.find();
+   
+    // Query all movies from MySQL
+    const [rows] = await db.query('SELECT * FROM movies');
 
     res.status(200).json({
         status: 'success',
-        results: movies.length,
+        results: rows.length,
         data: {
-            movies,
+            movies: rows
         },
     });
 });
@@ -36,13 +36,16 @@ exports.getAllMovies = catchAsync(async (req, res, next) => {
 // Returns only movies where movie.most_popular === true
 // ------------------------------------------------------
 exports.getMostPopularMovies = catchAsync(async (req, res, next) => {
-    const popular = movies.filter((movie) => movie.most_popular);
+   
+    const [rows] = await db.query(
+        'SELECT * FROM movies WHERE most_popular = 1 ORDER BY popularity DESC'
+    )
 
     res.status(200).json({
         status: 'success',
-        results: popular.length,
+        results: rows.length,
         data: {
-            movies: popular,
+            movies: rows,
         },
     });
 });
@@ -56,22 +59,109 @@ exports.getMostPopularMovies = catchAsync(async (req, res, next) => {
 exports.getMovieById = catchAsync(async (req, res, next) => {
     const id = Number(req.params.id);
 
-    // Try to find movie in basic movie list
-    const movie = movies.find((m) => m.id === id);
+    // Validate ID
 
-    if (!movie) {
-        // If no movie found → create an AppError (operational error)
-        return next(new AppError(`Movie with ID ${id} not found`, 404));
+    if (Number.isNaN(id) || id <= 0) {
+        return next(new AppError('Invalid movie ID', 400))
     }
 
-    // Try to find full details for this movie
-    const details = movieDetails.find((m) => m.id === id);
+    // Query db for movie
+
+    const[rows] = await db.query('SELECT * FROM movies WHERE id = ?', [id])
+
+    if (rows.length === 0) {
+        // No movie found
+        return next(new AppError(`Movie with ID ${id} not found`, 404))
+    }
+
+    const movie = rows[0];
 
     res.status(200).json({
         status: 'success',
         data: {
             movie,
-            details: details || null, // in case we don't have extended info
+            
         },
     });
 });
+
+// ------------------------------------------------------
+// POST /api/v1/movies
+// Creates a new movie in the MySQL database
+// ------------------------------------------------------
+
+exports.createMovie = catchAsync(async(req, res, next) => {
+    const {
+    title,
+    original_title,
+    overview,
+    release_date,
+    vote_average,
+    vote_count,
+    popularity,
+    poster_path,
+    backdrop_path,
+    original_language,
+    adult,
+    video,
+    most_popular,
+    genre_ids
+  } = req.body;
+
+
+if (!title) {
+    return next(new AppError('A movie must have at least a title', 400))
+}
+
+const sql = `
+    INSERT INTO movies (
+      title,
+      original_title,
+      overview,
+      release_date,
+      vote_average,
+      vote_count,
+      popularity,
+      poster_path,
+      backdrop_path,
+      original_language,
+      adult,
+      video,
+      most_popular,
+      genre_ids
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
+   const params = [
+    title,
+    original_title || null,
+    overview || null,
+    release_date || null,
+    vote_average ?? 0.0,
+    vote_count ?? 0,
+    popularity ?? 0.0,
+    poster_path || null,
+    backdrop_path || null,
+    original_language || null,
+    adult ? 1 : 0,
+    video ? 1 : 0,
+    most_popular ? 1 : 0,
+    JSON.stringify(genre_ids || [])
+  ];
+
+  // Insert into DB
+
+  const [result] = await db.query(sql, params);
+
+  // Fetch the newly-created movie
+
+  const [rows] = await db.query('SELECT * FROM movies WHERE id = ?', [result.insertId])
+
+  res.status(201).json({
+    status: 'success',
+    data: {
+        movie: rows[0]
+    }
+  })
+  })
