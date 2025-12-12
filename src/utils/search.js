@@ -1,19 +1,20 @@
-// src/utils/movieQueryHelpers.js
+// src/utils/search.js
+// Build search conditions for movies.
+// Currently: search by title + original_title (starts with search string).
 
-// Builds WHERE clause + params for movie search
-// Currently only: search by title (starts with)
-function buildMovieSearchClause(query) {
+function getSearch(query) {
   const search = query.search ? query.search.trim() : '';
 
-  let whereClause = '';
+  const conditions = [];
   const params = [];
 
   if (search) {
-    whereClause = 'WHERE title LIKE ?';
-    params.push(`${search}%`);        // "starts with" behaviour
+    // You can simplify to "title LIKE ?" if you want only title.
+    conditions.push('(title LIKE ?)');
+    params.push(`${search}%`); // "starts with"
   }
 
-  return { whereClause, params, search };
+  return { conditions, params, search };
 }
 
-module.exports = { buildMovieSearchClause };
+module.exports = { getSearch };

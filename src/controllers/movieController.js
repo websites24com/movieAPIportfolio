@@ -10,37 +10,60 @@
 const db = require('../config/db');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
+const { getPagination } = require('../utils/pagination');
+const { getSearch } = require('../utils/search');
+const { getFilters } = require('../utils/filters')
 
 // ------------------------------------------------------
 // GET /api/v1/movies
 // Returns ALL movies from the dataset.
 // ------------------------------------------------------
+
+
 exports.getAllMovies = catchAsync(async (req, res, next) => {
-  
-    // 1) Read query params and make sure they’re numbers, because Express makes them strings! parseInt(string, radix)  
-  const page = req.query.page ? parseInt(req.query.page, 10) : 1;
-  const limit = req.query.limit ? parseInt(req.query.limit, 10) : 20;
+  // 1) Pagination
+  const { page, limit, offset } = getPagination(req.query);
 
-  if (Number.isNaN(page) || Number.isNaN(limit) || page < 1 || limit < 1) {
-    return next(new AppError('Invalid page or limit parameter', 400));
-  }
+  // 2) Base conditions (none here)
+  const baseConditions = [];
+  const baseParams = [];
 
-  const offset = (page - 1) * limit;
+  // 3) Search + filters
+  const { conditions: searchConditions, params: searchParams, search } = getSearch(req.query);
+  const { conditions: filterConditions, params: filterParams } = getFilters(req.query);
 
-  // 2) Get page of movies
+  // 4) Merge all conditions and params
+  const allConditions = [
+    ...baseConditions,
+    ...searchConditions,
+    ...filterConditions,
+  ];
+  const allParams = [
+    ...baseParams,
+    ...searchParams,
+    ...filterParams,
+  ];
+
+  // Build WHERE clause string
+  const whereClause = allConditions.length
+    ? 'WHERE ' + allConditions.join(' AND ')
+    : '';
+
+  // 5) Get paginated movies
   const [movies] = await db.query(
-    'SELECT * FROM movies LIMIT ? OFFSET ?',
-    [limit, offset]
+    `SELECT * FROM movies ${whereClause} LIMIT ? OFFSET ?`,
+    [...allParams, limit, offset]
   );
 
-  // 3) Get total count
+  // 6) Get total count with same conditions
   const [countRows] = await db.query(
-    'SELECT COUNT(*) AS total FROM movies'
+    `SELECT COUNT(*) AS total FROM movies ${whereClause}`,
+    allParams
   );
   const total = countRows[0].total;
   const totalPages = Math.ceil(total / limit);
 
-  // 4) Send response
+  // 7) Response
   res.status(200).json({
     status: 'success',
     results: movies.length,
@@ -49,12 +72,15 @@ exports.getAllMovies = catchAsync(async (req, res, next) => {
       limit,
       total,
       totalPages,
+      search: search || null,
     },
     data: {
       movies,
     },
   });
 });
+
+
 
 
 
@@ -62,31 +88,51 @@ exports.getAllMovies = catchAsync(async (req, res, next) => {
 // GET /api/v1/movies/popular
 // Returns only movies where movie.most_popular === true
 // ------------------------------------------------------
+
 exports.getMostPopularMovies = catchAsync(async (req, res, next) => {
-  // 1) Read query params and make sure they’re numbers
-  const page = req.query.page ? parseInt(req.query.page, 10) : 1;
-  const limit = req.query.limit ? parseInt(req.query.limit, 10) : 20;
+  // 1) Pagination
+  const { page, limit, offset } = getPagination(req.query);
 
-  if (Number.isNaN(page) || Number.isNaN(limit) || page < 1 || limit < 1) {
-    return next(new AppError('Invalid page or limit parameter', 400));
-  }
+  // 2) Base condition: must always be most_popular = 1
+  const baseConditions = ['most_popular = 1'];
+  const baseParams = []; // no params needed for this condition
 
-  const offset = (page - 1) * limit;
+  // 3) Search + filters
+  const { conditions: searchConditions, params: searchParams, search } = getSearch(req.query);
+  const { conditions: filterConditions, params: filterParams } = getFilters(req.query);
 
-  // 2) Get paginated most_popular movies, ordered by popularity DESC
+  // 4) Merge all conditions and params
+  const allConditions = [
+    ...baseConditions,
+    ...searchConditions,
+    ...filterConditions,
+  ];
+  const allParams = [
+    ...baseParams,
+    ...searchParams,
+    ...filterParams,
+  ];
+
+  // Build WHERE clause string
+  const whereClause = allConditions.length
+    ? 'WHERE ' + allConditions.join(' AND ')
+    : '';
+
+  // 5) Get paginated popular movies (sorted by popularity DESC)
   const [movies] = await db.query(
-    'SELECT * FROM movies WHERE most_popular = 1 ORDER BY popularity DESC LIMIT ? OFFSET ?',
-    [limit, offset]
+    `SELECT * FROM movies ${whereClause} ORDER BY popularity DESC LIMIT ? OFFSET ?`,
+    [...allParams, limit, offset]
   );
 
-  // 3) Get total count of most_popular movies
+  // 6) Count total popular movies with same conditions
   const [countRows] = await db.query(
-    'SELECT COUNT(*) AS total FROM movies WHERE most_popular = 1'
+    `SELECT COUNT(*) AS total FROM movies ${whereClause}`,
+    allParams
   );
   const total = countRows[0].total;
   const totalPages = Math.ceil(total / limit);
 
-  // 4) Send response
+  // 7) Response
   res.status(200).json({
     status: 'success',
     results: movies.length,
@@ -95,12 +141,14 @@ exports.getMostPopularMovies = catchAsync(async (req, res, next) => {
       limit,
       total,
       totalPages,
+      search: search || null,
     },
     data: {
       movies,
     },
   });
 });
+
 
 // ------------------------------------------------------
 // GET /api/v1/movies/:id
