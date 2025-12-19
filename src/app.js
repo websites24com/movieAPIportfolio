@@ -3,6 +3,7 @@
 const express = require('express');
 const helmet = require('helmet')
 const morgan = require('morgan')
+const cookieParser = require('cookie-parser');
 const AppError = require('./utils/appError')
 const globalErrorHandler = require('./controllers/errorController')
 
@@ -11,6 +12,7 @@ const db = require('./config/db');
 
 // Routes
 const movieRoutes = require('./routes/movieRoutes')
+const authRoutes = require('./routes/authRoutes')
 
 // Express
 
@@ -19,6 +21,11 @@ const app = express();
 // HELMET Seucrity headers
 
 app.use(helmet());
+
+// Cookies
+
+app.use(cookieParser());
+
 
 // Public files
 
@@ -63,7 +70,9 @@ app.get('/api/v1/db-check', async (req, res, next) => {
 
 app.use('/api/v1/movies', movieRoutes);
 
+// Mount auth routes
 
+app.use('/api/v1/auth', authRoutes);
 
 // --- 404 handler 
 

@@ -7,6 +7,7 @@
 const express = require('express');
 const movieController = require('../controllers/movieController');
 const authApiKey = require('../middleware/authApiKey')
+const auth = require('../middleware/auth')
 
 const router = express.Router();
 
@@ -18,7 +19,7 @@ router.use(authApiKey)
 router
 .route('/')
 .get(movieController.getAllMovies)
-.post(movieController.createMovie)
+.post(auth.protect, movieController.createMovie)
 
 // /api/v1/movies/popular
 router.get('/popular', movieController.getMostPopularMovies);

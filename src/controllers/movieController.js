@@ -12,7 +12,8 @@ const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const { getPagination } = require('../utils/pagination');
 const { getSearch } = require('../utils/search');
-const { getFilters } = require('../utils/filters')
+const { getFilters } = require('../utils/filters');
+const { getSort } = require('../utils/sort')
 
 // ------------------------------------------------------
 // GET /api/v1/movies
@@ -49,9 +50,16 @@ exports.getAllMovies = catchAsync(async (req, res, next) => {
     ? 'WHERE ' + allConditions.join(' AND ')
     : '';
 
+  // ORDER BY
+
+  const orderByClause = getSort(req.query, {
+    defaultSort: 'title',
+    defaultOrder: 'ASC'
+  })
+
   // 5) Get paginated movies
   const [movies] = await db.query(
-    `SELECT * FROM movies ${whereClause} LIMIT ? OFFSET ?`,
+    `SELECT * FROM movies ${whereClause} ${orderByClause} LIMIT ? OFFSET ?`,
     [...allParams, limit, offset]
   );
 
@@ -73,6 +81,8 @@ exports.getAllMovies = catchAsync(async (req, res, next) => {
       total,
       totalPages,
       search: search || null,
+      sort: req.query.sort || 'title',
+      order: req.query.order || 'asc'
     },
     data: {
       movies,
@@ -118,9 +128,16 @@ exports.getMostPopularMovies = catchAsync(async (req, res, next) => {
     ? 'WHERE ' + allConditions.join(' AND ')
     : '';
 
+  // Order
+
+  const orderByClause = getSort(req.query, {
+    defaultSort: 'popularity',
+    defaultOrder: 'DESC'
+  })
+
   // 5) Get paginated popular movies (sorted by popularity DESC)
   const [movies] = await db.query(
-    `SELECT * FROM movies ${whereClause} ORDER BY popularity DESC LIMIT ? OFFSET ?`,
+    `SELECT * FROM movies ${whereClause} ${orderByClause} ORDER BY popularity DESC LIMIT ? OFFSET ?`,
     [...allParams, limit, offset]
   );
 
@@ -142,6 +159,8 @@ exports.getMostPopularMovies = catchAsync(async (req, res, next) => {
       total,
       totalPages,
       search: search || null,
+      sort: req.query.sort || 'popularity',
+      order: req.query.order || 'desc'
     },
     data: {
       movies,
@@ -207,13 +226,18 @@ exports.createMovie = catchAsync(async(req, res, next) => {
     genre_ids
   } = req.body;
 
+const owner_id = req.user.id;
+
 
 if (!title) {
     return next(new AppError('A movie must have at least a title', 400))
 }
 
+
+
 const sql = `
     INSERT INTO movies (
+      owner_id,
       title,
       original_title,
       overview,
@@ -229,10 +253,11 @@ const sql = `
       most_popular,
       genre_ids
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
    const params = [
+    owner_id,
     title,
     original_title || null,
     overview || null,
@@ -268,73 +293,107 @@ const sql = `
 
   // UPDATE
 
-  exports.updateMovie = catchAsync(async(req, res, next) => {
-    const movieId = req.params.id;
-    
-    // 1. Check if movie exists, we must have sth to update 😃
+  // UPDATE movie (ONE QUERY ONLY)
+// Rules enforced by SQL:
+// - ADMIN can update any movie
+// - USER can update only movies where owner_id = req.user.id
+//
+// IMPORTANT consequence of "one query only":
+// - We do NOT return the updated movie object (no extra SELECT).
+exports.updateMovie = catchAsync(async (req, res, next) => {
+  const movieId = Number(req.params.id);
 
-    const[existing] = await db.query('SELECT * FROM movies WHERE id = ?', [movieId]);
-    if (existing.length === 0) {
-        return next(new AppError(`Movie with ID ${movieId} not found`, 404))
-    }
-    // 2. Build UPDATE query dynamically
-    const fields = Object.keys(req.body);
-    if (fields.length === 0) {
-        return next(new AppError('No fields provided to update', 400))
-    }
+  // 1) Validate movie id
+  if (Number.isNaN(movieId) || movieId <= 0) {
+    return next(new AppError('Invalid movie ID', 400));
+  }
 
-    const values = Object.values(req.body);
+  // 2) Build update fields dynamically
+  // Never allow changing owner_id from request body (security).
+  const keys = Object.keys(req.body).filter((k) => k !== 'owner_id');
 
-    // Convert genre_ids array _to JSON string if present
+  // If no allowed fields were sent, nothing to update
+  if (keys.length === 0) {
+    return next(new AppError('No fields provided to update', 400));
+  }
 
-    if(req.body.genre_ids) {
-        const idx = fields.indexOf('genre_ids')
-        fields[idx] = 'genre_ids';
-        values[idx] = JSON.stringify(req.body.genre_ids)
-    }
+  // 3) Prepare values in the same order as keys
+  const values = keys.map((k) => {
+    // Convert genre_ids array into JSON string for DB
+    if (k === 'genre_ids') return JSON.stringify(req.body.genre_ids || []);
+    return req.body[k];
+  });
 
-    const sql = `
+  // 4) Build WHERE based on role
+  // Admin: WHERE id = ?
+  // User : WHERE id = ? AND owner_id = ?
+  let sql = `
     UPDATE movies
-    SET ${fields.map(f => `${f} = ?`).join(', ')}
-    WHERE id = ?`;
+    SET ${keys.map((k) => `${k} = ?`).join(', ')}
+    WHERE id = ?
+  `;
 
-    await db.query(sql, [...values, movieId]);
+  const params = [...values, movieId];
 
-    // 3. Return update movie
+  // Only non-admin must match ownership
+  if (req.user.role !== 'ADMIN') {
+    sql += ` AND owner_id = ?`;
+    params.push(req.user.id);
+  }
 
-    const [updated] = await db.query('SELECT * FROM movies WHERE id = ?', [movieId]);
+  // 5) ONE database query
+  const [result] = await db.query(sql, params);
 
-    res.status(200).json({
-        status: 'success',
-        data: {
-            movie: updated[0]
-        }
-    })
-  })
+  // 6) If no rows updated -> either:
+  // - movie does not exist
+  // - OR user does not own it (when not admin)
+  if (result.affectedRows === 0) {
+    return next(new AppError('Movie not found or you do not have permission to update it.', 403));
+  }
+
+  // 7) Return minimal success response (still professional API)
+  return res.status(200).json({
+    status: 'success',
+    data: {
+      message: `Movie ${movieId} updated successfully.`,
+      affectedRows: result.affectedRows
+    }
+  });
+});
+
 
   // DELETE
 
-  exports.deleteMovie = catchAsync(async(req, res, next) => {
-    const movieId = req.params.id;
-    
-    // 1. Check if movie exists, we must have sth to update 😃
-    
-    const[existing] = await db.query('SELECT * FROM movies WHERE id = ?', [movieId]);
-    if (existing.length === 0) {
-        return next(new AppError(`Movie with ID ${movieId} not found`, 404))
+// DELETE movie (ONE QUERY ONLY)
+// Rules enforced by SQL:
+// - ADMIN can delete any movie
+// - USER can delete only movies where owner_id = req.user.id
+exports.deleteMovie = catchAsync(async (req, res, next) => {
+  const movieId = Number(req.params.id);
+
+  if (Number.isNaN(movieId) || movieId <= 0) {
+    return next(new AppError('Invalid movie ID', 400));
+  }
+
+  let sql = `DELETE FROM movies WHERE id = ?`;
+  const params = [movieId];
+
+  if (req.user.role !== 'ADMIN') {
+    sql += ` AND owner_id = ?`;
+    params.push(req.user.id);
+  }
+
+  const [result] = await db.query(sql, params);
+
+  if (result.affectedRows === 0) {
+    return next(new AppError('Movie not found or you do not have permission to delete it.', 403));
+  }
+
+  return res.status(200).json({
+    status: 'success',
+    data: {
+      message: `Movie ${movieId} deleted successfully.`,
+      affectedRows: result.affectedRows
     }
-
-    // we store movie data before deleting
-
-    const movieToDelete = existing[0]
-
-    const[deleted] = await db.query('DELETE FROM movies WHERE id = ?', [movieId])
-
-    res.status(200).json({
-        status: 'success',
-        data: {
-            message: `The ${movieToDelete.title} with id:${movieToDelete.id} has been deleted!`,
-            
-        }
-    })
-})
+  });
+});

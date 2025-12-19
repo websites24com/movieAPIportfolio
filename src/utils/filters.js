@@ -35,6 +35,28 @@ function getFilters(query) {
     }
   }
 
+  // from year
+
+  if (query.fromYear) {
+    const fromYear = parseInt(query.fromYear, 10);
+    if (!Number.isNaN(fromYear)) {
+      conditions.push('YEAR(release_date) >= ?');
+      params.push(fromYear);
+    }
+  }
+
+  // from year
+
+  if (query.toYear) {
+    const toYear = parseInt(query.toYear, 10);
+    if (!Number.isNaN(toYear)) {
+      conditions.push('YEAR(release_date) <= ?');
+      params.push(toYear);
+    }
+  }
+
+
+
   // language → original_language = ?
   if (query.language) {
     const lang = query.language.trim();
