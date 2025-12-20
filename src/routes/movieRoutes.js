@@ -28,7 +28,7 @@ router.get('/popular', movieController.getMostPopularMovies);
 router
 .route('/:id')
 .get(movieController.getMovieById)
-.patch(movieController.updateMovie)
-.delete(movieController.deleteMovie)
+.patch(auth.protect, movieController.updateMovie)
+.delete(auth.protect, movieController.deleteMovie)
 
 module.exports = router;
