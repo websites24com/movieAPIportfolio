@@ -13,7 +13,7 @@ router.post('/logout', authController.logout)
 
 router.patch('/change-password', auth.protect, authController.changePassword)
 router.post('/forgot-password', authController.forgotPassword)
-router.post('/reset-password/:token', authController.resetPassword); // NEW
+router.patch('/reset-password/:token', authController.resetPassword); // NEW
 
 
 // Google OAuth (later)

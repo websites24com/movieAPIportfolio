@@ -12,7 +12,6 @@
 const bcrypt = require('bcryptjs');
 
 // built-in Node module for secure random tokens + hashing
-
 const crypto = require('crypto'); 
 
 
@@ -21,6 +20,9 @@ const jwt = require('jsonwebtoken');
 
 // db = your mysql2/promise pool
 const db = require('../config/db');
+
+// nodemailer
+const { sendEmail } = require('../utils/nodemailer');
 
 // catchAsync = wrapper so thrown async errors go to your global error handler
 const catchAsync = require('../utils/catchAsync');
@@ -399,8 +401,7 @@ exports.changePassword = catchAsync(async (req, res, next) => {
 // 1) Find user by email
 // 2) Generate a reset token (plain)
 // 3) Store HASHED token + expiry in DB
-// 4) Return the plain token (for Postman testing)
-// Later: we will email the token link instead of returning it.
+// 4) Email the reset link (token is plain in URL)
 exports.forgotPassword = catchAsync(async (req, res, next) => { // NEW
   const email = req.body.email; // NEW
 
@@ -410,7 +411,6 @@ exports.forgotPassword = catchAsync(async (req, res, next) => { // NEW
   }
 
   // 2) Find user by email
-  // We select only what we need here.
   const [rows] = await db.query( // NEW
     'SELECT id, email, active FROM users WHERE email = ? LIMIT 1', // NEW
     [email] // NEW
@@ -419,7 +419,6 @@ exports.forgotPassword = catchAsync(async (req, res, next) => { // NEW
   const user = rows[0]; // NEW
 
   // 3) If no user: do NOT reveal if email exists (security)
-  // We still return success message to prevent account discovery.
   if (!user) { // NEW
     return res.status(200).json({ // NEW
       status: 'success', // NEW
@@ -440,16 +439,10 @@ exports.forgotPassword = catchAsync(async (req, res, next) => { // NEW
   } // NEW
 
   // 5) Create reset token (PLAIN) and hashed version for DB
-  // crypto.randomBytes(32) returns a Buffer of random bytes.
-  // .toString('hex') converts it to a readable token string.
   const resetToken = crypto.randomBytes(32).toString('hex'); // NEW
-
-  // Hash the token so DB does not store the plain token.
-  // We use sha256 because it's fast and standard for token hashing.
   const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex'); // NEW
 
-  // 6) Set expiry time (example: 10 minutes from now)
-  // Date.now() is milliseconds since 1970. We add 10 minutes.
+  // 6) Set expiry time (10 minutes from now)
   const expires = new Date(Date.now() + 10 * 60 * 1000); // NEW
 
   // 7) Save hashed token + expiry in DB
@@ -458,16 +451,41 @@ exports.forgotPassword = catchAsync(async (req, res, next) => { // NEW
     [hashedToken, expires, user.id] // NEW
   ); // NEW
 
-  // 8) For NOW (Postman testing), return the plain token.
-  // Later we will EMAIL a link like:
-  // https://your-site.com/reset-password/<token>
-  return res.status(200).json({ // NEW
-    status: 'success', // NEW
-    data: { // NEW
-      message: 'Password reset token generated (testing mode).', // NEW
-      resetToken // NEW
-    } // NEW
-  }); // NEW
+  // 8) Build reset link (token is plain here; DB stores hashed version)
+  const baseUrl = process.env.APP_BASE_URL || `${req.protocol}://${req.get('host')}`; // NEW
+  const resetUrl = `${baseUrl}/reset-password/${resetToken}`; // NEW
+
+  // Minimal HTML email (we can improve template later)
+  const html = `
+    <p>You requested a password reset.</p>
+    <p>Click the link below to set a new password:</p>
+    <p><a href="${resetUrl}">${resetUrl}</a></p>
+    <p>This link will expire in 10 minutes.</p>
+  `;
+
+  // 9) Send email - if this fails, rollback token in DB
+  try { // NEW
+    await sendEmail({
+      to: user.email,
+      subject: 'Password reset',
+      html,
+    });
+  } catch (err) { // NEW
+    // Rollback: clear token fields so user can retry cleanly
+    await db.query( // NEW
+      'UPDATE users SET password_reset_token = NULL, password_reset_expires = NULL WHERE id = ? LIMIT 1', // NEW
+      [user.id] // NEW
+    ); // NEW
+
+    return next(new AppError('Email sending failed. Please try again later.', 500)); // NEW
+  }
+
+  return res.status(200).json({
+    status: 'success',
+    data: {
+      message: 'Password reset email sent.',
+    },
+  });
 });
 
 // NEW
@@ -483,49 +501,34 @@ exports.forgotPassword = catchAsync(async (req, res, next) => { // NEW
 // 6) Update DB: password, password_changed_at, clear reset token fields
 // 7) Issue new JWT + set cookie (sendAuthResponse)
 exports.resetPassword = catchAsync(async (req, res, next) => { // NEW
-  // ------------------------------------------------------------
   // 1) Read token from URL
-  // Example: /api/v1/auth/reset-password/abcdef123...
-  // ------------------------------------------------------------
   const token = req.params.token; // NEW
 
   if (!token) { // NEW
     return next(new AppError('Reset token is missing', 400)); // NEW
   } // NEW
 
-  // ------------------------------------------------------------
   // 2) Read new password fields from body
-  // ------------------------------------------------------------
   const newPassword = req.body.newPassword; // NEW
   const newPasswordConfirm = req.body.newPasswordConfirm; // NEW
 
-  // ------------------------------------------------------------
   // 3) Validate required fields
-  // ------------------------------------------------------------
   if (!newPassword || !newPasswordConfirm) { // NEW
     return next(new AppError('Please provide newPassword and newPasswordConfirm', 400)); // NEW
   } // NEW
 
-  // ------------------------------------------------------------
   // 4) Confirm passwords match
-  // ------------------------------------------------------------
   if (newPassword !== newPasswordConfirm) { // NEW
     return next(new AppError('New password and confirmation do not match', 400)); // NEW
   } // NEW
 
-  // ------------------------------------------------------------
   // 5) Hash the token to compare with DB (DB stores hashed token)
-  // ------------------------------------------------------------
   const hashedToken = crypto // NEW
     .createHash('sha256') // NEW
     .update(token) // NEW
     .digest('hex'); // NEW
 
-  // ------------------------------------------------------------
   // 6) Find user by hashed token + valid expiry
-  // IMPORTANT:
-  // - password_reset_expires must be > NOW()
-  // ------------------------------------------------------------
   const [rows] = await db.query( // NEW
     `SELECT id, name, email, role, provider, active, created_at
      FROM users
@@ -538,28 +541,20 @@ exports.resetPassword = catchAsync(async (req, res, next) => { // NEW
 
   const user = rows[0]; // NEW
 
-  // ------------------------------------------------------------
   // 7) If token invalid or expired
-  // ------------------------------------------------------------
   if (!user) { // NEW
     return next(new AppError('Token is invalid or has expired', 400)); // NEW
   } // NEW
 
-  // ------------------------------------------------------------
   // 8) If account disabled: block reset
-  // ------------------------------------------------------------
   if (user.active !== 1) { // NEW
     return next(new AppError('This account is disabled.', 403)); // NEW
   } // NEW
 
-  // ------------------------------------------------------------
   // 9) Hash the new password
-  // ------------------------------------------------------------
   const hashedNewPassword = await bcrypt.hash(newPassword, 12); // NEW
 
-  // ------------------------------------------------------------
   // 10) Update password + clear reset fields so token can't be reused
-  // ------------------------------------------------------------
   await db.query( // NEW
     `UPDATE users
      SET password = ?,
@@ -571,9 +566,7 @@ exports.resetPassword = catchAsync(async (req, res, next) => { // NEW
     [hashedNewPassword, user.id] // NEW
   ); // NEW
 
-  // ------------------------------------------------------------
   // 11) Reload updated user (safe fields for response)
-  // ------------------------------------------------------------
   const [updatedRows] = await db.query( // NEW
     'SELECT id, name, email, role, provider, active, created_at FROM users WHERE id = ? LIMIT 1', // NEW
     [user.id] // NEW
@@ -582,20 +575,27 @@ exports.resetPassword = catchAsync(async (req, res, next) => { // NEW
   const updatedUser = updatedRows[0]; // NEW
 
   // ------------------------------------------------------------
-  // 12) Send new JWT + refresh HttpOnly cookie
+  // 12) SEND CONFIRMATION EMAIL  <<< THIS IS THE ONLY NEW PART
   // ------------------------------------------------------------
+  await sendEmail({
+    to: updatedUser.email,
+    subject: 'Password changed',
+    html: `
+      <p>Your password was successfully changed.</p>
+      <p>If this wasn’t you, please contact support immediately.</p>
+    `,
+  });
+
+  // 13) Send new JWT + refresh HttpOnly cookie
   return sendAuthResponse(res, updatedUser, 200); // NEW
 });
-
-
-
 
 
 // Google OAuth endpoints will be implemented later (next phase).
 exports.googleAuth = (req, res, next) => {
   return next(new AppError('Google auth not implemented yet', 501));
 };
-
+//     STEP by STEP not all at once frist authcontroller than routes
 exports.googleCallback = (req, res, next) => {
   return next(new AppError('Google callback not implemented yet', 501));
 };
