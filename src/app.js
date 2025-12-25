@@ -1,95 +1,117 @@
 // Configuration of Express application
 
 const express = require('express');
-const helmet = require('helmet')
-const morgan = require('morgan')
+const helmet = require('helmet');
+const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
-const AppError = require('./utils/appError')
-const globalErrorHandler = require('./controllers/errorController')
+const ensureCsrfCookie = require('./middlewares/ensureCsrfCookie.js');
 
-// DB
-const db = require('./config/db');
+const path = require('path');
+const AppError = require('./utils/appError');
+const globalErrorHandler = require('./controllers/errorController');
+
+// Middlewares
+
+const viewAuth = require('./middlewares/viewAuth');
 
 // Routes
-const movieRoutes = require('./routes/movieRoutes')
-const authRoutes = require('./routes/authRoutes')
+const movieRoutes = require('./routes/movieRoutes');
+const authRoutes = require('./routes/authRoutes');
+const viewRoutes = require('./routes/viewRoutes')
+const healthRoutes = require('./routes/healthRoutes')
 
-// Express
-
+// -------------------- APP --------------------
 const app = express();
 
-// HELMET Seucrity headers
+// -------------------- SECURITY --------------------
+app.use(
+  helmet({
+    // ✅ This is the key fix for Google Sign-In popup flows
+    // Without it, window.opener becomes null for cross-origin popups.
+    crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
 
-app.use(helmet());
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: [
+          "'self'",
+          "https://accounts.google.com",
+          "https://accounts.gstatic.com",
+          "https://ssl.gstatic.com"
+        ],
+        frameSrc: [
+          "'self'",
+          "https://accounts.google.com"
+        ],
+        connectSrc: [
+          "'self'",
+          "https://accounts.google.com",
+          "https://accounts.gstatic.com",
+          "https://ssl.gstatic.com"
+        ],
+        imgSrc: [
+          "'self'",
+          "data:",
+          "https://accounts.google.com",
+          "https://accounts.gstatic.com",
+          "https://ssl.gstatic.com",
+          "https://lh3.googleusercontent.com"
+        ]
+      }
+    }
+  })
+);
 
-// Cookies
 
+// -------------------- PARSERS --------------------
 app.use(cookieParser());
-
-
-// Public files
-
-app.use(express.static('public'));
-
-
-// Parse JSON request bodies (for POST/PUT/PATCH)
-
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Request logger - only in development
+// CSFR
 
-if (process.env.Node_ENV === 'development') {
-    app.use(morgan('dev'));
+app.use(ensureCsrfCookie);
+
+
+// Middlewares
+
+app.use(viewAuth.attachUserIfLoggedIn);
+
+
+// -------------------- LOGGING --------------------
+if (process.env.NODE_ENV === 'development') {
+  app.use(morgan('dev'));
 }
 
-// Simple health-check route
-app.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
-    name: 'Movie API',
-    version: '1.0.0',
-  });
+// -------------------- VIEW ENGINE --------------------
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+
+// -------------------- STATIC FILES --------------------
+app.use(express.static(path.join(__dirname, '..', 'public')))
+
+
+// -------------------- ROUTES --------------------
+
+app.use('/', healthRoutes);              // GET /
+app.use('/api/v1', healthRoutes);         // GET /api/v1/db-check
+app.use('/api/v1/movies', movieRoutes);
+app.use('/api/v1/auth', authRoutes);
+app.use('/', viewRoutes)
+
+
+
+// -------------------- 404 (EXPRESS 5) --------------------
+app.all('/{*splat}', (req, res, next) => {
+  next(
+    new AppError(
+      `Cannot ${req.method} ${req.originalUrl}`,
+      404
+    )
+  );
 });
 
-// DB health-check route
-
-app.get('/api/v1/db-check', async (req, res, next) => {
-  try {
-    const [rows] = await db.query('SELECT 1 + 1 AS result');
-    res.json({
-      status: 'success',
-      db: 'connected',
-      result: rows[0].result
-    })
-  } catch (err) {
-    next(err)
-  }
-})
-
-// Mount movie routes under /api/v1/movies
-
-app.use('/api/v1/movies', movieRoutes);
-
-// Mount auth routes
-
-app.use('/api/v1/auth', authRoutes);
-
-// --- 404 handler 
-
-app.all('{*splat}', (req, res, next) => {
-    // Create an AppError and pass to next()
-   // This will be handled by the global error handler below
-   next(
-    new AppError(
-        `Cannot ${req.method} ${req.originalUrl}`,
-        404
-    )
-   )
-   // ---------- Global error handling middleware ----------
-
-   app.use(globalErrorHandler);
-})
-
-
+// -------------------- GLOBAL ERROR HANDLER (LAST) --------------------
+app.use(globalErrorHandler);
 
 module.exports = app;

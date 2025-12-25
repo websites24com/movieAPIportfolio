@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Login</title>
+
+  <!-- Required for Google Identity Services -->
+  <meta name="google-client-id" content="<%= googleClientId %>">
+</head>
+<body>
+
+  <h1>Login</h1>
+
+  <!-- Error output (used by login.js) -->
+  <div id="error"></div>
+
+  <!-- Local login -->
+  <form id="login-form" autocomplete="on">
+    <div>
+      <label for="email">Email</label>
+      <input
+        id="email"
+        name="email"
+        type="email"
+        required
+        autocomplete="email"
+      >
+    </div>
+
+    <div>
+      <label for="password">Password</label>
+      <input
+        id="password"
+        name="password"
+        type="password"
+        required
+        autocomplete="current-password"
+      >
+    </div>
+
+    <button type="submit">Login</button>
+  </form>
+
+  <hr>
+
+  <!-- Google login button target -->
+  <div id="google-button"></div>
+
+  <p>
+    <a href="/forgot-password">Forgot password?</a>
+  </p>
+
+  <p>
+    <a href="/register">Create account</a>
+  </p>
+
+  <!-- Google Identity Services -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+  <!-- Your existing JS (exactly as provided) -->
+  <script src="/js/login.js" defer></script>
+
+</body>
+</html>

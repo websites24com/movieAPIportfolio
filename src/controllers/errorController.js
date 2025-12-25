@@ -1,33 +1,31 @@
 // src/controllers/errorController.js
-// =======================================================
-// Global error handling middleware for the Movie API.
-//
-// - In DEVELOPMENT: show full error details (message, stack, raw error)
-// - In PRODUCTION : show only safe messages for operational errors
-//                   and a generic message for programming/unknown errors.
-// =======================================================
+
+const AppError = require('../utils/appError');
 
 // Helper: send detailed error in development
 const sendErrorDev = (err, req, res) => {
-  // Log full error in the console for the developer
   console.error('🔥 DEV ERROR:', err);
 
-  res.status(err.statusCode || 500).json({
+  return res.status(err.statusCode || 500).json({
     status: err.status || 'error',
     message: err.message,
-    // In dev we can expose more to make debugging easier:
-    error: err,       // full error object
-    stack: err.stack, // stack trace
+    error: err,
+    stack: err.stack,
   });
 };
 
+// Convert JWT errors into operational AppError (safe message)
+const handleJWTError = () =>
+  new AppError('Invalid token. Please log in again.', 401);
+
+const handleJWTExpiredError = () =>
+  new AppError('Your session has expired. Please log in again.', 401);
+
 // Helper: send safe error in production
 const sendErrorProd = (err, req, res) => {
-  // Log only basic info in production (still helpful for logs)
   console.error('🔥 PROD ERROR:', err);
 
-  // 1) Operational, trusted error: send the message to the client
-  //    (these are typically created with AppError)
+  // Operational, trusted error -> send message
   if (err.isOperational) {
     return res.status(err.statusCode).json({
       status: err.status,
@@ -35,45 +33,39 @@ const sendErrorProd = (err, req, res) => {
     });
   }
 
-  // 2) Programming or unknown error: don't leak details to the client
-  //    We still log it above for ourselves, but user gets a generic message.
+  // Unknown / programming error -> generic
   return res.status(500).json({
     status: 'error',
     message: 'Something went wrong on the server.',
   });
 };
 
-// -------------------------------------------------------
-// MAIN GLOBAL ERROR HANDLER MIDDLEWARE
-// This is the function passed to app.use(globalErrorHandler)
-// -------------------------------------------------------
 module.exports = (err, req, res, next) => {
-  // If headers were already sent, delegate to Express's default handler.
-  // This avoids the "Can't set headers after they are sent" error.
-  if (res.headersSent) {
-    return next(err);
-  }
+  if (res.headersSent) return next(err);
 
-  // Ensure we have some default values
+  // Defaults (do NOT clone the error)
   err.statusCode = err.statusCode || 500;
   err.status = err.status || 'error';
 
-  // Decide logic based on NODE_ENV
   const env = process.env.NODE_ENV || 'development';
 
   if (env === 'development') {
-    // In development we want maximum information
-    sendErrorDev(err, req, res);
-  } else {
-    // In production we only want safe messages
-    // (We can clone the error if we want to transform it)
-    const error = { ...err };
-    // Important: message is not copied by spread for Error objects
-    error.message = err.message;
-    error.statusCode = err.statusCode;
-    error.status = err.status;
-    error.isOperational = err.isOperational;
-
-    sendErrorProd(error, req, res);
+    return sendErrorDev(err, req, res);
   }
+
+  // ---------------- PRODUCTION ----------------
+  // Convert known errors into operational AppErrors
+  let error = err;
+
+  // JWT: invalid signature, malformed token, etc.
+  if (error.name === 'JsonWebTokenError') {
+    error = handleJWTError();
+  }
+
+  // JWT: expired token
+  if (error.name === 'TokenExpiredError') {
+    error = handleJWTExpiredError();
+  }
+
+  return sendErrorProd(error, req, res);
 };

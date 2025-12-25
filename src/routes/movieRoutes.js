@@ -6,8 +6,8 @@
 
 const express = require('express');
 const movieController = require('../controllers/movieController');
-const authApiKey = require('../middleware/authApiKey')
-const auth = require('../middleware/auth')
+const authApiKey = require('../middlewares/authApiKey')
+const auth = require('../middlewares/auth')
 
 const router = express.Router();
 

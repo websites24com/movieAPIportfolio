@@ -1,110 +1,132 @@
 // src/controllers/authController.js
 //
 // GOAL OF THIS CONTROLLER (Bearer + Cookies):
-// 1) On REGISTER / LOGIN we will:
+// 1) On REGISTER / LOGIN / GOOGLE LOGIN we will:
 //    - create/sign a JWT
 //    - return the token in JSON (for Postman / mobile / any API client)
 //    - ALSO set an HttpOnly cookie "jwt" (for browser apps)
 //
+// IMPORTANT LOGOUT FIX (cookie must be removed reliably):
+// - Cookie deletion MUST match the cookie identity (name + path + etc.)
+// - We centralize cookie options in ONE place below (baseJwtCookieOptions)
+// - We ALWAYS set `path: '/'` so logout clears the same cookie that login sets
 
-
-// bcryptjs = password hashing + comparing hashes safely
 const bcrypt = require('bcryptjs');
-
-// built-in Node module for secure random tokens + hashing
-const crypto = require('crypto'); 
-
-
-// jsonwebtoken = signing and verifying JWT tokens
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 
-// db = your mysql2/promise pool
 const db = require('../config/db');
-
-// nodemailer
 const { sendEmail } = require('../utils/nodemailer');
-
-// catchAsync = wrapper so thrown async errors go to your global error handler
 const catchAsync = require('../utils/catchAsync');
-
-// AppError = your operational error class (statusCode + message)
 const AppError = require('../utils/appError');
 
-//
-// Helper #1: create JWT token string
-//
+// Google ID token verification (Google Identity Services -> send "credential" JWT to backend)
+const { OAuth2Client } = require('google-auth-library');
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+// -----------------------------------------------------------------------------
+// Helpers (small, isolated, heavily commented)
+// -----------------------------------------------------------------------------
+
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+function validatePasswordOrThrow(password) {
+  if (typeof password !== 'string') {
+    throw new AppError('Password must be a string', 400);
+  }
+
+  const trimmed = password.trim();
+
+  // NOTE: I am not changing your policy here; only keeping your existing logic.
+  if (trimmed.length < 5) {
+    throw new AppError('Password must be at least 5 characters long', 400);
+  }
+
+  if (trimmed.length > 128) {
+    throw new AppError('Password must be at most 128 characters long', 400);
+  }
+
+  const hasLetter = /[A-Za-z]/.test(trimmed);
+  const hasNumber = /[0-9]/.test(trimmed);
+
+  if (!hasLetter || !hasNumber) {
+    throw new AppError('Password must contain at least one letter and one number', 400);
+  }
+}
+
 function signToken(payload) {
-  // JWT_SECRET must exist, otherwise server can't sign tokens.
-  // This is a configuration error, not a "bad request".
   if (!process.env.JWT_SECRET) {
     throw new Error('JWT_SECRET is missing in environment variables');
   }
 
-  // Expiration is configurable. Example: "7d", "1h", "15m"
-  // If not set, we default to 7 days.
   const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
-
-  // Sign and return the token string
   return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn });
 }
 
-//
-// Helper #2: set JWT as HttpOnly cookie on the response
-//
+/**
+ * Single source of truth for JWT cookie options.
+ * This prevents logout "not working" due to cookie path mismatch.
+ */
+function baseJwtCookieOptions() {
+  const isProd = process.env.NODE_ENV === 'production';
+
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: 'lax',
+    path: '/', // CRITICAL: makes cookie global + ensures delete matches set
+  };
+}
+
+/**
+ * Set JWT as HttpOnly cookie.
+ */
 function setJwtCookie(res, token) {
-  // Cookie security settings:
-  // - httpOnly: JS cannot read it in the browser -> protects against XSS reading cookies
-  // - secure: only sent over HTTPS (in production you should use true)
-  // - sameSite: controls cross-site cookie sending
-  //
-  // NOTE: secure should be true on HTTPS hosting (production).
-  // For local dev (http://localhost) secure must be false otherwise cookie won't set.
-  const isProd = (process.env.NODE_ENV === 'production');
-
-  // Optional: control cookie expiration. If not set, browser treats it as a session cookie.
-  // We'll set it to "JWT_COOKIE_EXPIRES_DAYS" if provided, otherwise default 7 days.
   const cookieDays = Number(process.env.JWT_COOKIE_EXPIRES_IN || 7);
-
-  // IMPORTANT: this creates a real Date object in the future.
   const expires = new Date(Date.now() + cookieDays * 24 * 60 * 60 * 1000);
 
-  // Set cookie. Name: "jwt"
   res.cookie('jwt', token, {
-    httpOnly: true,      // cannot be accessed by document.cookie in browser JS
-    secure: isProd,      // true in prod HTTPS, false in local HTTP
-    sameSite: 'lax',     // good default for many apps; stricter than 'none'
-    expires,             // cookie expiry date
+    ...baseJwtCookieOptions(),
+    expires,
   });
 }
 
-//
-// Helper #3: send response that supports BOTH client types
-// - JSON contains token for Bearer usage
-// - Cookie is set for browser usage
-//
+/**
+ * Clear JWT cookie reliably (must match same options incl. path).
+ */
+function clearJwtCookie(res) {
+  res.cookie('jwt', '', {
+    ...baseJwtCookieOptions(),
+    expires: new Date(0),
+  });
+}
+
+/**
+ * Send a unified auth response:
+ * - set cookie for browsers
+ * - return token in JSON for API clients
+ */
 function sendAuthResponse(res, user, statusCode) {
-  // Put only minimal safe data into the token.
-  // Never store password/email inside the token unless you have a strong reason.
   const token = signToken({
     id: user.id,
     role: user.role,
   });
 
-  // Set HttpOnly cookie (for browser apps)
   setJwtCookie(res, token);
 
-  // ALSO return the token in JSON (for Postman / mobile / API clients)
   return res.status(statusCode).json({
     status: 'success',
-    token, // <-- this is what you copy into Authorization: Bearer <token> in Postman
+    token,
     data: {
       user: {
-        // Return only safe fields
         id: user.id,
         name: user.name,
         email: user.email,
         role: user.role,
         provider: user.provider,
+        provider_id: user.provider_id || null,
         active: user.active,
         created_at: user.created_at,
       },
@@ -112,350 +134,303 @@ function sendAuthResponse(res, user, statusCode) {
   });
 }
 
-//
-// POST /api/v1/auth/register
-// Body: { name, email, password }
-// Steps:
-// 1) validate input
-// 2) check email uniqueness
-// 3) hash password
-// 4) insert user
-// 5) read created user
-// 6) issue JWT -> return token + set cookie
-//
+function getBaseUrl(req) {
+  return process.env.APP_BASE_URL || `${req.protocol}://${req.get('host')}`;
+}
+
+async function enforcePasswordChangeRateLimit(userId) {
+  const [rows] = await db.query(
+    `SELECT
+       password_change_count,
+       password_change_window_start
+     FROM users
+     WHERE id = ?
+     LIMIT 1`,
+    [userId]
+  );
+
+  const info = rows[0];
+  if (!info) {
+    return { ok: false, error: new AppError('User not found', 404) };
+  }
+
+  const count = Number(info.password_change_count || 0);
+  const windowStart = info.password_change_window_start;
+
+  const shouldReset =
+    !windowStart ||
+    new Date(windowStart).getTime() <= Date.now() - 60 * 60 * 1000;
+
+  if (shouldReset) {
+    await db.query(
+      `UPDATE users
+       SET password_change_count = 0,
+           password_change_window_start = NOW()
+       WHERE id = ?
+       LIMIT 1`,
+      [userId]
+    );
+    return { ok: true };
+  }
+
+  if (count >= 3) {
+    return { ok: false, error: new AppError('Too many password changes. Try again later.', 429) };
+  }
+
+  return { ok: true };
+}
+
+async function incrementPasswordChangeCount(userId) {
+  await db.query(
+    `UPDATE users
+     SET password_change_count = COALESCE(password_change_count, 0) + 1,
+         password_change_window_start = COALESCE(password_change_window_start, NOW())
+     WHERE id = ?
+     LIMIT 1`,
+    [userId]
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Controllers
+// -----------------------------------------------------------------------------
+
+/**
+ * POST /api/v1/auth/register
+ * Body: { name, email, password }
+ */
 exports.register = catchAsync(async (req, res, next) => {
-  // 1) Read input from JSON body
-  const name = req.body.name;
-  const email = req.body.email;
+  const name = String(req.body.name || '').trim();
+  const email = normalizeEmail(req.body.email);
   const password = req.body.password;
 
-  // 2) Validate required fields
   if (!name || !email || !password) {
     return next(new AppError('Please provide name, email and password', 400));
   }
 
-  // 3) Check if email already exists
-  const [existingRows] = await db.query( // NEW
+  validatePasswordOrThrow(password);
+
+  const [existingRows] = await db.query(
     'SELECT id FROM users WHERE email = ? LIMIT 1',
     [email]
   );
 
   if (existingRows.length > 0) {
-    // 409 = conflict (resource already exists)
     return next(new AppError('Email is already in use', 409));
   }
 
-  // 4) Hash password using bcrypt
-  // "12" is a common secure cost; you can increase later if needed.
   const hashedPassword = await bcrypt.hash(password, 12);
 
-  // 5) Insert user into DB
-  // - provider = 'local'
-  // - role = 'USER'
-  // - active = 1
-  const [insertResult] = await db.query( // NEW
+  const [insertResult] = await db.query(
     `INSERT INTO users (name, email, password, provider, provider_id, role, active)
      VALUES (?, ?, ?, 'local', NULL, 'USER', 1)`,
     [name, email, hashedPassword]
   );
 
-  // New user id created by AUTO_INCREMENT
-  const newUserId = insertResult.insertId; // NEW
+  const newUserId = insertResult.insertId;
 
-  // 6) Fetch created user (safe fields for response)
-  const [createdRows] = await db.query( // NEW
-    'SELECT id, name, email, role, provider, active, created_at FROM users WHERE id = ? LIMIT 1',
+  const [createdRows] = await db.query(
+    `SELECT id, name, email, role, provider, provider_id, active, created_at
+     FROM users
+     WHERE id = ?
+     LIMIT 1`,
     [newUserId]
   );
 
-  const createdUser = createdRows[0]; // NEW
-
-  // 7) Send JWT in JSON + set HttpOnly cookie
-  return sendAuthResponse(res, createdUser, 201); // 201 = created
+  const createdUser = createdRows[0];
+  return sendAuthResponse(res, createdUser, 201);
 });
 
-//
-// POST /api/v1/auth/login
-// Body: { email, password }
-// Steps:
-// 1) validate input
-// 2) load user by email
-// 3) check active
-// 4) ensure local password exists
-// 5) compare bcrypt hash
-// 6) issue JWT -> return token + set cookie
-//
+/**
+ * POST /api/v1/auth/login
+ * Body: { email, password }
+ */
 exports.login = catchAsync(async (req, res, next) => {
-  const email = req.body.email;
+  const email = normalizeEmail(req.body.email);
   const password = req.body.password;
 
-  // 1) Validate required fields
   if (!email || !password) {
     return next(new AppError('Please provide email and password', 400));
   }
 
-  // 2) Load user. We must select "password" for comparing.
-  const [rows] = await db.query( // NEW
-    'SELECT id, name, email, password, role, provider, active, created_at FROM users WHERE email = ? LIMIT 1',
+  const [rows] = await db.query(
+    `SELECT id, name, email, password, role, provider, provider_id, active, created_at
+     FROM users
+     WHERE email = ?
+     LIMIT 1`,
     [email]
   );
 
-  const user = rows[0]; // NEW
+  const user = rows[0];
 
-  // 3) If user not found: generic message (don’t leak which part failed)
   if (!user) {
     return next(new AppError('Incorrect email or password', 401));
   }
 
-  // 4) If account disabled: block login
-  if (user.active !== 1) {
+  if (Number(user.active) !== 1) {
     return next(new AppError('Account is disabled', 403));
   }
 
-  // 5) If no password: this user is likely Google-only later
   if (!user.password) {
     return next(new AppError('This account does not have a local password', 401));
   }
 
-  // 6) Compare plaintext password with bcrypt hash from DB
   const ok = await bcrypt.compare(password, user.password);
-
   if (!ok) {
     return next(new AppError('Incorrect email or password', 401));
   }
 
-  // 7) Send JWT in JSON + set HttpOnly cookie
   return sendAuthResponse(res, user, 200);
 });
 
-//
-// POST /api/v1/auth/logout
-//
-// GOAL (Bearer + Cookies):
-// - For browser apps: remove the HttpOnly cookie "jwt"
-// - For API clients (Postman/mobile): there is nothing to "delete" server-side with pure JWT,
-//   so we just return success and the client must delete/forget its stored Bearer token.
-//
-// IMPORTANT:
-// - This is still useful even if you mainly use Bearer tokens,
-//   because your app ALSO sets the jwt cookie on login/register.
-//
+/**
+ * POST /api/v1/auth/logout
+ *
+ * Correct behavior:
+ * - clear the SAME cookie we set (same name + same cookie options + same path)
+ */
 exports.logout = catchAsync(async (req, res, next) => {
-  // In production we usually keep secure cookies, in local dev it's false
-  const isProd = (process.env.NODE_ENV === 'production');
+  clearJwtCookie(res);
 
-  // Clear the cookie by overwriting it with a short-lived value
-  // We must use SAME cookie options (at least: httpOnly, secure, sameSite)
-  // so the browser matches and removes the correct cookie.
-  res.cookie('jwt', '', {
-    httpOnly: true,        // cookie is HttpOnly -> must clear it the same way
-    secure: isProd,        // must match how it was set
-    sameSite: 'lax',       // must match how it was set
-    expires: new Date(0),  // Jan 1 1970 -> instantly expired
-  });
-
-  // Respond to client
   return res.status(200).json({
     status: 'success',
-    data: {
-      message: 'Logged out successfully.'
-    }
+    data: { message: 'Logged out successfully.' },
   });
 });
 
-// NEW
-// PATCH /api/v1/auth/change-password
-// Body: { currentPassword, newPassword, newPasswordConfirm }
-//
-// FULL FUNCTION – rewritten cleanly, no [0][0]
+/**
+ * PATCH /api/v1/auth/change-password
+ * Body: { currentPassword, newPassword, newPasswordConfirm }
+ * Protected route: requires auth.protect to set req.user.id
+ */
 exports.changePassword = catchAsync(async (req, res, next) => {
-  // ------------------------------------------------------------
-  // 1) Read values from request body
-  // ------------------------------------------------------------
   const currentPassword = req.body.currentPassword;
   const newPassword = req.body.newPassword;
   const newPasswordConfirm = req.body.newPasswordConfirm;
 
-  // ------------------------------------------------------------
-  // 2) Validate required fields
-  // ------------------------------------------------------------
   if (!currentPassword || !newPassword || !newPasswordConfirm) {
-    return next(
-      new AppError(
-        'Please provide currentPassword, newPassword and newPasswordConfirm',
-        400
-      )
-    );
+    return next(new AppError(
+      'Please provide currentPassword, newPassword and newPasswordConfirm',
+      400
+    ));
   }
 
-  // ------------------------------------------------------------
-  // 3) Check new password confirmation
-  // ------------------------------------------------------------
   if (newPassword !== newPasswordConfirm) {
-    return next(
-      new AppError('New password and confirmation do not match', 400)
-    );
+    return next(new AppError('New password and confirmation do not match', 400));
   }
 
-  // ------------------------------------------------------------
-  // 4) Prevent setting the same password again
-  // ------------------------------------------------------------
+  validatePasswordOrThrow(newPassword);
+
   if (currentPassword === newPassword) {
-    return next(
-      new AppError(
-        'New password must be different from current password',
-        400
-      )
-    );
+    return next(new AppError('New password must be different from current password', 400));
   }
 
-  // ------------------------------------------------------------
-  // 5) Get user ID from JWT (set by auth.protect middleware)
-  // ------------------------------------------------------------
-  const userId = req.user.id;
+  const userId = req.user && req.user.id;
+  if (!userId) {
+    return next(new AppError('Not authenticated', 401));
+  }
 
-  // ------------------------------------------------------------
-  // 6) Load user from database INCLUDING password hash
-  // ------------------------------------------------------------
   const [rows] = await db.query(
-    'SELECT id, name, email, password, role, provider, active, created_at FROM users WHERE id = ? LIMIT 1',
+    `SELECT id, password, active
+     FROM users
+     WHERE id = ?
+     LIMIT 1`,
     [userId]
   );
 
   const user = rows[0];
 
-  // ------------------------------------------------------------
-  // 7) User existence check
-  // ------------------------------------------------------------
   if (!user) {
     return next(new AppError('User not found', 404));
   }
 
-  // ------------------------------------------------------------
-  // 8) Check if account is active
-  // ------------------------------------------------------------
-  if (user.active !== 1) {
+  if (Number(user.active) !== 1) {
     return next(new AppError('This account is disabled.', 403));
   }
 
-  // ------------------------------------------------------------
-  // 9) Ensure user has a local password
-  // (important for future Google-only users)
-  // ------------------------------------------------------------
   if (!user.password) {
-    return next(
-      new AppError(
-        'This account does not have a local password to change',
-        400
-      )
-    );
+    return next(new AppError('This account does not have a local password to change', 400));
   }
 
-  // ------------------------------------------------------------
-  // 10) Verify current password
-  // ------------------------------------------------------------
-  const isCorrect = await bcrypt.compare(
-    currentPassword,
-    user.password
-  );
-
+  const isCorrect = await bcrypt.compare(currentPassword, user.password);
   if (!isCorrect) {
-    return next(
-      new AppError('Your current password is wrong', 401)
-    );
+    return next(new AppError('Your current password is wrong', 401));
   }
 
-  // ------------------------------------------------------------
-  // 11) Hash the new password
-  // ------------------------------------------------------------
+  const limitCheck = await enforcePasswordChangeRateLimit(userId);
+  if (!limitCheck.ok) {
+    return next(limitCheck.error);
+  }
+
   const hashedNewPassword = await bcrypt.hash(newPassword, 12);
 
-  // ------------------------------------------------------------
-  // 12) Update password + password_changed_at in DB
-  // ------------------------------------------------------------
   await db.query(
-    'UPDATE users SET password = ?, password_changed_at = NOW() WHERE id = ? LIMIT 1',
+    `UPDATE users
+     SET password = ?,
+         password_changed_at = NOW()
+     WHERE id = ?
+     LIMIT 1`,
     [hashedNewPassword, userId]
   );
 
-  // ------------------------------------------------------------
-  // 13) Reload updated user (safe fields only)
-  // ------------------------------------------------------------
+  await incrementPasswordChangeCount(userId);
+
   const [updatedRows] = await db.query(
-    'SELECT id, name, email, role, provider, active, created_at FROM users WHERE id = ? LIMIT 1',
+    `SELECT id, name, email, role, provider, provider_id, active, created_at
+     FROM users
+     WHERE id = ?
+     LIMIT 1`,
     [userId]
   );
 
   const updatedUser = updatedRows[0];
-
-  // ------------------------------------------------------------
-  // 14) Send new JWT + refresh HttpOnly cookie
-  // ------------------------------------------------------------
   return sendAuthResponse(res, updatedUser, 200);
 });
 
-// NEW
-// POST /api/v1/auth/forgot-password
-// Body: { email }
-// What it does:
-// 1) Find user by email
-// 2) Generate a reset token (plain)
-// 3) Store HASHED token + expiry in DB
-// 4) Email the reset link (token is plain in URL)
-exports.forgotPassword = catchAsync(async (req, res, next) => { // NEW
-  const email = req.body.email; // NEW
+/**
+ * POST /api/v1/auth/forgot-password
+ * Body: { email }
+ */
+exports.forgotPassword = catchAsync(async (req, res, next) => {
+  const email = normalizeEmail(req.body.email);
 
-  // 1) Validate required field
-  if (!email) { // NEW
-    return next(new AppError('Please provide your email', 400)); // NEW
+  if (!email) {
+    return next(new AppError('Please provide your email', 400));
   }
 
-  // 2) Find user by email
-  const [rows] = await db.query( // NEW
-    'SELECT id, email, active FROM users WHERE email = ? LIMIT 1', // NEW
-    [email] // NEW
-  ); // NEW
+  const [rows] = await db.query(
+    'SELECT id, email, active FROM users WHERE email = ? LIMIT 1',
+    [email]
+  );
 
-  const user = rows[0]; // NEW
+  const user = rows[0];
 
-  // 3) If no user: do NOT reveal if email exists (security)
-  if (!user) { // NEW
-    return res.status(200).json({ // NEW
-      status: 'success', // NEW
-      data: { // NEW
-        message: 'If that email exists, a password reset token has been issued.' // NEW
-      } // NEW
-    }); // NEW
-  } // NEW
+  const genericSuccess = () => res.status(200).json({
+    status: 'success',
+    data: { message: 'If that email exists, a password reset link has been sent.' },
+  });
 
-  // 4) If account disabled: still do not reveal too much
-  if (user.active !== 1) { // NEW
-    return res.status(200).json({ // NEW
-      status: 'success', // NEW
-      data: { // NEW
-        message: 'If that email exists, a password reset token has been issued.' // NEW
-      } // NEW
-    }); // NEW
-  } // NEW
+  if (!user || Number(user.active) !== 1) {
+    return genericSuccess();
+  }
 
-  // 5) Create reset token (PLAIN) and hashed version for DB
-  const resetToken = crypto.randomBytes(32).toString('hex'); // NEW
-  const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex'); // NEW
+  const resetToken = crypto.randomBytes(32).toString('hex');
+  const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
 
-  // 6) Set expiry time (10 minutes from now)
-  const expires = new Date(Date.now() + 10 * 60 * 1000); // NEW
+  const expires = new Date(Date.now() + 10 * 60 * 1000);
 
-  // 7) Save hashed token + expiry in DB
-  await db.query( // NEW
-    'UPDATE users SET password_reset_token = ?, password_reset_expires = ? WHERE id = ? LIMIT 1', // NEW
-    [hashedToken, expires, user.id] // NEW
-  ); // NEW
+  await db.query(
+    `UPDATE users
+     SET password_reset_token = ?,
+         password_reset_expires = ?
+     WHERE id = ?
+     LIMIT 1`,
+    [hashedToken, expires, user.id]
+  );
 
-  // 8) Build reset link (token is plain here; DB stores hashed version)
-  const baseUrl = process.env.APP_BASE_URL || `${req.protocol}://${req.get('host')}`; // NEW
-  const resetUrl = `${baseUrl}/reset-password/${resetToken}`; // NEW
+  const baseUrl = getBaseUrl(req);
+  const resetUrl = `${baseUrl}/reset-password/${resetToken}`;
 
-  // Minimal HTML email (we can improve template later)
   const html = `
     <p>You requested a password reset.</p>
     <p>Click the link below to set a new password:</p>
@@ -463,139 +438,233 @@ exports.forgotPassword = catchAsync(async (req, res, next) => { // NEW
     <p>This link will expire in 10 minutes.</p>
   `;
 
-  // 9) Send email - if this fails, rollback token in DB
-  try { // NEW
+  try {
     await sendEmail({
       to: user.email,
       subject: 'Password reset',
       html,
     });
-  } catch (err) { // NEW
-    // Rollback: clear token fields so user can retry cleanly
-    await db.query( // NEW
-      'UPDATE users SET password_reset_token = NULL, password_reset_expires = NULL WHERE id = ? LIMIT 1', // NEW
-      [user.id] // NEW
-    ); // NEW
+  } catch (err) {
+    await db.query(
+      `UPDATE users
+       SET password_reset_token = NULL,
+           password_reset_expires = NULL
+       WHERE id = ?
+       LIMIT 1`,
+      [user.id]
+    );
 
-    return next(new AppError('Email sending failed. Please try again later.', 500)); // NEW
+    return next(new AppError('Email sending failed. Please try again later.', 500));
   }
 
   return res.status(200).json({
     status: 'success',
-    data: {
-      message: 'Password reset email sent.',
-    },
+    data: { message: 'Password reset email sent.' },
   });
 });
 
-// NEW
-// POST /api/v1/auth/reset-password/:token
-// Body: { newPassword, newPasswordConfirm }
-//
-// Steps:
-// 1) Read token from URL params
-// 2) Hash token (because DB stores hashed token)
-// 3) Find user by hashed token AND expiry > now
-// 4) Validate new password + confirm
-// 5) Hash new password
-// 6) Update DB: password, password_changed_at, clear reset token fields
-// 7) Issue new JWT + set cookie (sendAuthResponse)
-exports.resetPassword = catchAsync(async (req, res, next) => { // NEW
-  // 1) Read token from URL
-  const token = req.params.token; // NEW
+/**
+ * PATCH /api/v1/auth/reset-password/:token
+ * Body: { newPassword, newPasswordConfirm }
+ */
+exports.resetPassword = catchAsync(async (req, res, next) => {
+  const token = req.params.token;
 
-  if (!token) { // NEW
-    return next(new AppError('Reset token is missing', 400)); // NEW
-  } // NEW
+  if (!token) {
+    return next(new AppError('Reset token is missing', 400));
+  }
 
-  // 2) Read new password fields from body
-  const newPassword = req.body.newPassword; // NEW
-  const newPasswordConfirm = req.body.newPasswordConfirm; // NEW
+  const newPassword = req.body.newPassword;
+  const newPasswordConfirm = req.body.newPasswordConfirm;
 
-  // 3) Validate required fields
-  if (!newPassword || !newPasswordConfirm) { // NEW
-    return next(new AppError('Please provide newPassword and newPasswordConfirm', 400)); // NEW
-  } // NEW
+  if (!newPassword || !newPasswordConfirm) {
+    return next(new AppError('Please provide newPassword and newPasswordConfirm', 400));
+  }
 
-  // 4) Confirm passwords match
-  if (newPassword !== newPasswordConfirm) { // NEW
-    return next(new AppError('New password and confirmation do not match', 400)); // NEW
-  } // NEW
+  if (newPassword !== newPasswordConfirm) {
+    return next(new AppError('New password and confirmation do not match', 400));
+  }
 
-  // 5) Hash the token to compare with DB (DB stores hashed token)
-  const hashedToken = crypto // NEW
-    .createHash('sha256') // NEW
-    .update(token) // NEW
-    .digest('hex'); // NEW
+  validatePasswordOrThrow(newPassword);
 
-  // 6) Find user by hashed token + valid expiry
-  const [rows] = await db.query( // NEW
-    `SELECT id, name, email, role, provider, active, created_at
+  const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+
+  const [rows] = await db.query(
+    `SELECT id, email, active
      FROM users
      WHERE password_reset_token = ?
        AND password_reset_expires IS NOT NULL
        AND password_reset_expires > NOW()
-     LIMIT 1`, // NEW
-    [hashedToken] // NEW
-  ); // NEW
+     LIMIT 1`,
+    [hashedToken]
+  );
 
-  const user = rows[0]; // NEW
+  const user = rows[0];
 
-  // 7) If token invalid or expired
-  if (!user) { // NEW
-    return next(new AppError('Token is invalid or has expired', 400)); // NEW
-  } // NEW
+  if (!user) {
+    return next(new AppError('Token is invalid or has expired', 400));
+  }
 
-  // 8) If account disabled: block reset
-  if (user.active !== 1) { // NEW
-    return next(new AppError('This account is disabled.', 403)); // NEW
-  } // NEW
+  if (Number(user.active) !== 1) {
+    return next(new AppError('This account is disabled.', 403));
+  }
 
-  // 9) Hash the new password
-  const hashedNewPassword = await bcrypt.hash(newPassword, 12); // NEW
+  const limitCheck = await enforcePasswordChangeRateLimit(user.id);
+  if (!limitCheck.ok) {
+    return next(limitCheck.error);
+  }
 
-  // 10) Update password + clear reset fields so token can't be reused
-  await db.query( // NEW
+  const hashedNewPassword = await bcrypt.hash(newPassword, 12);
+
+  await db.query(
     `UPDATE users
      SET password = ?,
          password_changed_at = NOW(),
          password_reset_token = NULL,
          password_reset_expires = NULL
      WHERE id = ?
-     LIMIT 1`, // NEW
-    [hashedNewPassword, user.id] // NEW
-  ); // NEW
+     LIMIT 1`,
+    [hashedNewPassword, user.id]
+  );
 
-  // 11) Reload updated user (safe fields for response)
-  const [updatedRows] = await db.query( // NEW
-    'SELECT id, name, email, role, provider, active, created_at FROM users WHERE id = ? LIMIT 1', // NEW
-    [user.id] // NEW
-  ); // NEW
+  await incrementPasswordChangeCount(user.id);
 
-  const updatedUser = updatedRows[0]; // NEW
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: 'Password changed',
+      html: `
+        <p>Your password was successfully changed.</p>
+        <p>If this wasn’t you, please contact support immediately.</p>
+      `,
+    });
+  } catch (errEmail) {
+    // Do not block login if confirmation email fails
+  }
 
-  // ------------------------------------------------------------
-  // 12) SEND CONFIRMATION EMAIL  <<< THIS IS THE ONLY NEW PART
-  // ------------------------------------------------------------
-  await sendEmail({
-    to: updatedUser.email,
-    subject: 'Password changed',
-    html: `
-      <p>Your password was successfully changed.</p>
-      <p>If this wasn’t you, please contact support immediately.</p>
-    `,
-  });
+  const [updatedRows] = await db.query(
+    `SELECT id, name, email, role, provider, provider_id, active, created_at
+     FROM users
+     WHERE id = ?
+     LIMIT 1`,
+    [user.id]
+  );
 
-  // 13) Send new JWT + refresh HttpOnly cookie
-  return sendAuthResponse(res, updatedUser, 200); // NEW
+  const updatedUser = updatedRows[0];
+  return sendAuthResponse(res, updatedUser, 200);
 });
 
+/**
+ * POST /api/v1/auth/google
+ * Body: { credential: "<GOOGLE_ID_TOKEN>" }
+ */
+exports.googleAuth = catchAsync(async (req, res, next) => {
+  const credential = req.body.credential;
 
-// Google OAuth endpoints will be implemented later (next phase).
-exports.googleAuth = (req, res, next) => {
-  return next(new AppError('Google auth not implemented yet', 501));
-};
-//     STEP by STEP not all at once frist authcontroller than routes
-exports.googleCallback = (req, res, next) => {
-  return next(new AppError('Google callback not implemented yet', 501));
-};
+  if (!credential || typeof credential !== 'string') {
+    return next(new AppError('Google credential (id_token) is missing', 400));
+  }
+
+  const ticket = await googleClient.verifyIdToken({
+    idToken: credential,
+    audience: process.env.GOOGLE_CLIENT_ID,
+  });
+
+  const payload = ticket.getPayload();
+
+  if (!payload) {
+    return next(new AppError('Invalid Google token', 401));
+  }
+
+  const googleSub = payload.sub;
+  const email = payload.email;
+  const emailVerified = payload.email_verified;
+  const nameFromGoogle = payload.name || 'Google User';
+
+  if (!googleSub) {
+    return next(new AppError('Google user id (sub) is missing', 401));
+  }
+
+  if (!email) {
+    return next(new AppError('Google account did not provide an email', 400));
+  }
+
+  if (emailVerified !== true) {
+    return next(new AppError('Google email is not verified', 401));
+  }
+
+  const normalizedEmail = normalizeEmail(email);
+
+  const [byProviderRows] = await db.query(
+    `SELECT id, name, email, role, provider, provider_id, active, created_at
+     FROM users
+     WHERE provider = 'google' AND provider_id = ?
+     LIMIT 1`,
+    [googleSub]
+  );
+
+  let user = byProviderRows[0] || null;
+
+  if (!user) {
+    const [byEmailRows] = await db.query(
+      `SELECT id, name, email, role, provider, provider_id, active, created_at
+       FROM users
+       WHERE email = ?
+       LIMIT 1`,
+      [normalizedEmail]
+    );
+
+    user = byEmailRows[0] || null;
+
+    if (user && user.provider !== 'google') {
+      await db.query(
+        `UPDATE users
+         SET provider = 'google',
+             provider_id = ?
+         WHERE id = ?
+         LIMIT 1`,
+        [googleSub, user.id]
+      );
+
+      const [reloadedRows] = await db.query(
+        `SELECT id, name, email, role, provider, provider_id, active, created_at
+         FROM users
+         WHERE id = ?
+         LIMIT 1`,
+        [user.id]
+      );
+
+      user = reloadedRows[0] || user;
+    }
+  }
+
+  if (!user) {
+    const [insertResult] = await db.query(
+      `INSERT INTO users (name, email, password, provider, provider_id, role, active)
+       VALUES (?, ?, NULL, 'google', ?, 'USER', 1)`,
+      [nameFromGoogle, normalizedEmail, googleSub]
+    );
+
+    const newUserId = insertResult.insertId;
+
+    const [createdRows] = await db.query(
+      `SELECT id, name, email, role, provider, provider_id, active, created_at
+       FROM users
+       WHERE id = ?
+       LIMIT 1`,
+      [newUserId]
+    );
+
+    user = createdRows[0] || null;
+  }
+
+  if (!user) {
+    return next(new AppError('Failed to authenticate with Google', 500));
+  }
+
+  if (Number(user.active) !== 1) {
+    return next(new AppError('Account is disabled', 403));
+  }
+
+  return sendAuthResponse(res, user, 200);
+});

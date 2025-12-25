@@ -1,23 +1,32 @@
 const express = require('express');
 
 const authController = require('../controllers/authController');
-
-const auth = require('../middleware/auth')
+const auth = require('../middlewares/auth');
+const requireCsrf = require('../middlewares/requireCsrf');
 
 const router = express.Router();
 
-// JWT local auth
-router.post('/register', authController.register);
-router.post('/login', authController.login);
-router.post('/logout', authController.logout)
+// ====================
+// Public auth routes
+// (but they set the JWT cookie in browser)
+// => SHOULD have CSRF too
+// ====================
+router.post('/register', requireCsrf, authController.register);
+router.post('/login', requireCsrf, authController.login);
+router.post('/google', requireCsrf, authController.googleAuth);
 
-router.patch('/change-password', auth.protect, authController.changePassword)
-router.post('/forgot-password', authController.forgotPassword)
-router.patch('/reset-password/:token', authController.resetPassword); // NEW
+// ====================
+// Password reset flow
+// (optional CSRF; not required for correctness)
+// ====================
+router.post('/forgot-password', authController.forgotPassword);
+router.patch('/reset-password/:token', authController.resetPassword);
 
-
-// Google OAuth (later)
-router.get('/google', authController.googleAuth);
-router.get('/google/callback', authController.googleCallback);
+// ====================
+// Cookie-authenticated + state-changing
+// => MUST have CSRF
+// ====================
+router.post('/logout', auth.protect, requireCsrf, authController.logout);
+router.patch('/change-password', auth.protect, requireCsrf, authController.changePassword);
 
 module.exports = router;
