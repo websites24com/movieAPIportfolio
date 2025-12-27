@@ -13,7 +13,11 @@
     <p>Provider: <%= user.provider %></p>
 
     <button id="logout-btn" type="button">Logout</button>
+
+    <!-- REQUIRED -->
+    <script src="/js/csrfFetch.js" defer></script>
     <script src="/js/logout.js" defer></script>
+
   <% } else { %>
     <p>You are not logged in.</p>
     <p><a href="/login">Go to login</a></p>

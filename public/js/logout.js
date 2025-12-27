@@ -3,22 +3,22 @@
   if (!btn) return;
 
   btn.addEventListener('click', async () => {
-    const res = await fetch('/api/v1/auth/logout', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: {
-        'x-csrf-token': csrfToken || ''
-      }
-    });
+    try {
+      const res = await csrfFetch('/api/v1/auth/logout', {
+        method: 'POST'
+      });
 
-    // If logout fails, don't pretend it worked
-    if (!res.ok) {
       const data = await res.json().catch(() => null);
-      alert(`Logout failed (${res.status}) ${data?.message || ''}`);
-      return;
-    }
 
-    // Go to a view route
-    window.location.assign('/');
+      if (!res.ok) {
+        console.error('Logout failed:', res.status, data);
+        return;
+      }
+
+      console.log('Logout successful');
+      window.location.assign('/');
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
   });
 })();

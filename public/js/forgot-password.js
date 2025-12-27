@@ -1,41 +1,20 @@
 (function () {
-  const form = document.getElementById('forgot-form');
+  const form = document.getElementById('reset-form');
   const errorBox = document.getElementById('error');
   const okBox = document.getElementById('ok');
-
-  if (!form) return;
-
-  // Make sure browser validation never blocks JS
-  form.setAttribute('novalidate', 'novalidate');
+  const token = String(document.getElementById('resetToken')?.value || '').trim();
 
   function setError(msg) {
-    if (!errorBox) return;
-    errorBox.textContent = msg || '';
+    if (errorBox) errorBox.textContent = msg || '';
+    if (okBox) okBox.textContent = '';
   }
 
   function setOk(msg) {
-    if (!okBox) return;
-    okBox.textContent = msg || '';
+    if (okBox) okBox.textContent = msg || '';
+    if (errorBox) errorBox.textContent = '';
   }
 
-  // Catch native HTML validation (required / type=email)
-  form.addEventListener(
-    'invalid',
-    function (e) {
-      e.preventDefault();
-      setOk('');
-
-      if (e.target && e.target.name === 'email') {
-        const value = String(e.target.value || '').trim();
-        if (!value) {
-          setError('Please provide your email.');
-        } else {
-          setError('Please provide a valid email address.');
-        }
-      }
-    },
-    true // capture phase is important
-  );
+  if (!form) return;
 
   form.addEventListener('submit', async function (e) {
     e.preventDefault();
@@ -43,49 +22,53 @@
     setError('');
     setOk('');
 
-    const emailInput = form.elements.namedItem('email');
-    const email = String(emailInput?.value || '').trim();
+    if (!token) {
+      setError('Reset token is missing. Please use the email link again.');
+      return;
+    }
 
-    // FRONTEND validation — this is YOUR message
-    if (!email) {
-      setError('Please provide your email.');
+    const newPassword = String(form.elements.newPassword?.value || '').trim();
+    const newPasswordConfirm = String(form.elements.newPasswordConfirm?.value || '').trim();
+
+    if (!newPassword) {
+      setError('Please provide a new password.');
+      return;
+    }
+
+    if (!newPasswordConfirm) {
+      setError('Please confirm your password.');
+      return;
+    }
+
+    if (newPassword !== newPasswordConfirm) {
+      setError('Passwords do not match.');
       return;
     }
 
     try {
-      const res = await fetch('/api/v1/auth/forgot-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email })
-      });
+      const res = await csrfFetch(
+        `/api/v1/auth/reset-password/${encodeURIComponent(token)}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newPassword, newPasswordConfirm })
+        }
+      );
 
-      const contentType = res.headers.get('content-type') || '';
-      let data = null;
-      let text = '';
-
-      if (contentType.includes('application/json')) {
-        data = await res.json().catch(() => null);
-      } else {
-        text = await res.text().catch(() => '');
-      }
+      const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        const msg =
-          (data && (data.message || data.error || data?.data?.message)) ||
-          text ||
-          `Request failed (${res.status})`;
+        const msg = data?.message || data?.error?.message || `Reset failed (${res.status})`;
         throw new Error(msg);
       }
 
-      // SUCCESS MESSAGE (server preferred, fallback otherwise)
-      const successMessage =
-        (data && (data.data?.message || data.message)) ||
-        'If that email exists, a reset link has been sent.';
+      setOk('Password reset successful. Redirecting…');
 
-      setOk(successMessage);
-
+      setTimeout(() => {
+        window.location.assign('/login');
+      }, 800);
     } catch (err) {
-      setError(err?.message || 'Request failed.');
+      setError(err && err.message ? err.message : 'Reset failed.');
     }
   });
 })();

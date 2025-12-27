@@ -1,85 +1,59 @@
 const express = require('express');
-
 const router = express.Router();
 
 // --------------------
-// Render HOME page
+// HOME
 // --------------------
 router.get('/', (req, res) => {
-    res.render('home');
+  res.render('home');
 });
 
 // --------------------
-// Render LOGIN page
-// --------------------
-router.get('/login', (req, res) => {
-    res.render('login', {
-        googleClientId: process.env.GOOGLE_CLIENT_ID,
-        baseUrl: '/api/v1/auth' // kept explicit, not guessed elsewhere
-    });
-});
-
-// Render REGISTER page
-router.get('/register', (req, res) => {
-  res.render('register');
-});
-
-// Render FORGOT PASSWORD page
-router.get('/forgot-password', (req, res) => {
-  res.render('forgot-password');
-});
-
-// Reset password
-
-router.get('/reset-password/:token', (req, res) => {
-  res.render('reset-password', {
-    token: req.params.token
-  })
-})
-
-// --------------------
-// Render HOME page
-// --------------------
-router.get('/', (req, res) => {
-    res.render('home');
-});
-
-// --------------------
-// Render LOGIN page
+// LOGIN
 // --------------------
 router.get('/login', (req, res) => {
-    res.render('login', {
-        googleClientId: process.env.GOOGLE_CLIENT_ID,
-        baseUrl: '/api/v1/auth' // kept explicit, not guessed elsewhere
-    });
+  res.render('login', {
+    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
+    baseUrl: '/api/v1/auth'
+  });
 });
 
-// Render REGISTER page
+// --------------------
+// REGISTER
+// --------------------
 router.get('/register', (req, res) => {
-  res.render('register');
+  res.render('register', {
+    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
+    baseUrl: '/api/v1/auth'
+  });
 });
 
-// Render FORGOT PASSWORD page
+// --------------------
+// FORGOT PASSWORD
+// --------------------
 router.get('/forgot-password', (req, res) => {
-  res.render('forgot-password');
+  res.render('forgot-password', {
+    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID
+  });
 });
 
-// Reset password
-
+// --------------------
+// RESET PASSWORD
+// --------------------
 router.get('/reset-password/:token', (req, res) => {
   res.render('reset-password', {
-    token: req.params.token
-  })
-})
+    token: req.params.token,
+    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID
+  });
+});
 
-// Change password
-
+// --------------------
+// CHANGE PASSWORD
+// --------------------
 router.get('/change-password', (req, res) => {
-  res.render('change-password');
-})
-
+  res.render('change-password', {
+    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID
+  });
+});
 
 module.exports = router;
-
-
-

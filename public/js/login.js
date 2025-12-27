@@ -1,115 +1,91 @@
 (function () {
   const form = document.getElementById('login-form');
+
   const errorBox = document.getElementById('error');
+  const googleErrorBox = document.getElementById('google-error');
 
   function setError(msg) {
     if (errorBox) errorBox.textContent = msg || '';
   }
 
-  // Read csrfToken cookie (set by ensureCsrfCookie with httpOnly: false)
-  function getCookie(name) {
-    const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
-    return match ? decodeURIComponent(match[1]) : null;
+  function setGoogleError(msg) {
+    if (googleErrorBox) googleErrorBox.textContent = msg || '';
   }
 
-  // Local login via fetch (prevents browser navigation to API -> prevents JSON page)
-  if (form) {
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
+  function getValue(formEl, fieldName) {
+    const el = formEl.elements && formEl.elements[fieldName];
+    return el ? String(el.value || '') : '';
+  }
+
+  // -------------------------
+  // GOOGLE CALLBACK (SAME STYLE AS REGISTER)
+  // -------------------------
+  // Google calls this by name from: data-callback="onGoogleCredential"
+  window.onGoogleCredential = async function onGoogleCredential(response) {
+    try {
       setError('');
+      setGoogleError('');
 
-      const email = String(form.email?.value || '').trim();
-      const password = String(form.password?.value || '');
-
-      if (!email || !password) {
-        setError('Please provide email and password.');
+      const credential = response && response.credential;
+      if (!credential) {
+        setGoogleError('Google login failed: missing credential.');
         return;
       }
 
-      const csrfToken = getCookie('csrfToken');
+      const res = await csrfFetch('/api/v1/auth/google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential })
+      });
 
-      try {
-        const res = await fetch('/api/v1/auth/login', {
-          method: 'POST',
-          credentials: 'same-origin', // ✅ ensures cookies are included/received consistently
-          headers: {
-            'Content-Type': 'application/json',
-            // ✅ CSRF: echo cookie token back to server
-            'x-csrf-token': csrfToken || ''
-          },
-          body: JSON.stringify({ email, password })
-        });
+      const data = await res.json().catch(() => null);
 
-        const data = await res.json().catch(() => null);
-
-        if (!res.ok) {
-          const msg = (data && data.message) ? data.message : `Login failed (${res.status})`;
-          throw new Error(msg);
-        }
-
-        // Redirect to VIEW route
-        window.location.assign('/');
-
-      } catch (err) {
-        setError(err.message || 'Login failed.');
+      if (!res.ok) {
+        const msg = data?.message || data?.error?.message || `Google auth failed (${res.status})`;
+        throw new Error(msg);
       }
-    });
-  }
 
-  // Google login (kept working with your Helmet COOP fix)
-  window.addEventListener('load', () => {
-    const btn = document.getElementById('google-button');
-    if (!btn) return;
+      window.location.assign('/');
+    } catch (err) {
+      setGoogleError(err && err.message ? err.message : 'Google login failed');
+    }
+  };
 
-    if (!window.google || !google.accounts || !google.accounts.id) return;
+  // -------------------------
+  // LOCAL LOGIN
+  // -------------------------
+  if (!form) return;
 
-    const meta = document.querySelector('meta[name="google-client-id"]');
-    const clientId = meta ? meta.getAttribute('content') : '';
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    setError('');
+    setGoogleError('');
 
-    if (!clientId) {
-      setError('Missing GOOGLE_CLIENT_ID on page.');
+    const email = getValue(form, 'email').trim().toLowerCase();
+    const password = getValue(form, 'password');
+
+    if (!email || !password) {
+      setError('Please provide email and password.');
       return;
     }
 
-    google.accounts.id.initialize({
-      client_id: clientId,
-      callback: async (response) => {
-        setError('');
+    try {
+      const res = await csrfFetch('/api/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
 
-        if (!response || !response.credential) {
-          setError('Google login failed.');
-          return;
-        }
+      const data = await res.json().catch(() => null);
 
-        const csrfToken = getCookie('csrfToken');
-
-        try {
-          const res = await fetch('/api/v1/auth/google', {
-            method: 'POST',
-            credentials: 'same-origin', // ✅ same here
-            headers: {
-              'Content-Type': 'application/json',
-              // ✅ CSRF for /google too (since it sets jwt cookie)
-              'x-csrf-token': csrfToken || ''
-            },
-            body: JSON.stringify({ credential: response.credential })
-          });
-
-          const data = await res.json().catch(() => null);
-
-          if (!res.ok) {
-            const msg = (data && data.message) ? data.message : `Google auth failed (${res.status})`;
-            throw new Error(msg);
-          }
-
-          window.location.assign('/');
-
-        } catch (err) {
-          setError(err.message || 'Google login failed.');
-        }
+      if (!res.ok) {
+        const msg = data?.message || data?.error?.message || `Login failed (${res.status})`;
+        throw new Error(msg);
       }
-    });
 
-    google.accounts.id.renderButton(btn, { theme: 'outline', size: 'large' });
+      window.location.assign('/');
+    } catch (err) {
+      setError(err && err.message ? err.message : 'Login failed.');
+    }
   });
 })();

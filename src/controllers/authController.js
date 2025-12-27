@@ -23,6 +23,8 @@ const AppError = require('../utils/appError');
 // Google ID token verification (Google Identity Services -> send "credential" JWT to backend)
 const { OAuth2Client } = require('google-auth-library');
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const { buildGoogleAuthHandler } = require('./googleAuthController');
+
 
 // -----------------------------------------------------------------------------
 // Helpers (small, isolated, heavily commented)
@@ -554,117 +556,6 @@ exports.resetPassword = catchAsync(async (req, res, next) => {
   return sendAuthResponse(res, updatedUser, 200);
 });
 
-/**
- * POST /api/v1/auth/google
- * Body: { credential: "<GOOGLE_ID_TOKEN>" }
- */
-exports.googleAuth = catchAsync(async (req, res, next) => {
-  const credential = req.body.credential;
+// Re-export google auth from a separate file (keeps routes unchanged)
+exports.googleAuth = buildGoogleAuthHandler({ sendAuthResponse });
 
-  if (!credential || typeof credential !== 'string') {
-    return next(new AppError('Google credential (id_token) is missing', 400));
-  }
-
-  const ticket = await googleClient.verifyIdToken({
-    idToken: credential,
-    audience: process.env.GOOGLE_CLIENT_ID,
-  });
-
-  const payload = ticket.getPayload();
-
-  if (!payload) {
-    return next(new AppError('Invalid Google token', 401));
-  }
-
-  const googleSub = payload.sub;
-  const email = payload.email;
-  const emailVerified = payload.email_verified;
-  const nameFromGoogle = payload.name || 'Google User';
-
-  if (!googleSub) {
-    return next(new AppError('Google user id (sub) is missing', 401));
-  }
-
-  if (!email) {
-    return next(new AppError('Google account did not provide an email', 400));
-  }
-
-  if (emailVerified !== true) {
-    return next(new AppError('Google email is not verified', 401));
-  }
-
-  const normalizedEmail = normalizeEmail(email);
-
-  const [byProviderRows] = await db.query(
-    `SELECT id, name, email, role, provider, provider_id, active, created_at
-     FROM users
-     WHERE provider = 'google' AND provider_id = ?
-     LIMIT 1`,
-    [googleSub]
-  );
-
-  let user = byProviderRows[0] || null;
-
-  if (!user) {
-    const [byEmailRows] = await db.query(
-      `SELECT id, name, email, role, provider, provider_id, active, created_at
-       FROM users
-       WHERE email = ?
-       LIMIT 1`,
-      [normalizedEmail]
-    );
-
-    user = byEmailRows[0] || null;
-
-    if (user && user.provider !== 'google') {
-      await db.query(
-        `UPDATE users
-         SET provider = 'google',
-             provider_id = ?
-         WHERE id = ?
-         LIMIT 1`,
-        [googleSub, user.id]
-      );
-
-      const [reloadedRows] = await db.query(
-        `SELECT id, name, email, role, provider, provider_id, active, created_at
-         FROM users
-         WHERE id = ?
-         LIMIT 1`,
-        [user.id]
-      );
-
-      user = reloadedRows[0] || user;
-    }
-  }
-
-  if (!user) {
-    const [insertResult] = await db.query(
-      `INSERT INTO users (name, email, password, provider, provider_id, role, active)
-       VALUES (?, ?, NULL, 'google', ?, 'USER', 1)`,
-      [nameFromGoogle, normalizedEmail, googleSub]
-    );
-
-    const newUserId = insertResult.insertId;
-
-    const [createdRows] = await db.query(
-      `SELECT id, name, email, role, provider, provider_id, active, created_at
-       FROM users
-       WHERE id = ?
-       LIMIT 1`,
-      [newUserId]
-    );
-
-    user = createdRows[0] || null;
-  }
-
-  if (!user) {
-    return next(new AppError('Failed to authenticate with Google', 500));
-  }
-
-  if (Number(user.active) !== 1) {
-    return next(new AppError('Account is disabled', 403));
-  }
-
-  return sendAuthResponse(res, user, 200);
-});
