@@ -2,58 +2,73 @@
   const form = document.getElementById('reset-form');
   const errorBox = document.getElementById('error');
   const okBox = document.getElementById('ok');
-
-  if (!form) return;
-
-  const token = document.getElementById('resetToken')?.value?.trim();
+  const token = String(document.getElementById('resetToken')?.value || '').trim();
 
   function setError(msg) {
-    errorBox.textContent = msg || '';
-    okBox.textContent = '';
+    if (errorBox) errorBox.textContent = msg || '';
+    if (okBox) okBox.textContent = '';
   }
 
   function setOk(msg) {
-    okBox.textContent = msg || '';
-    errorBox.textContent = '';
+    if (okBox) okBox.textContent = msg || '';
+    if (errorBox) errorBox.textContent = '';
   }
+
+  if (!form) return;
 
   form.addEventListener('submit', async function (e) {
     e.preventDefault();
+
+    setError('');
+    setOk('');
 
     if (!token) {
       setError('Reset token is missing. Please use the email link again.');
       return;
     }
 
-    const newPassword = form.newPassword.value.trim();
-    const newPasswordConfirm = form.newPasswordConfirm.value.trim();
+    const newPassword = String(form.elements.newPassword?.value || '').trim();
+    const newPasswordConfirm = String(form.elements.newPasswordConfirm?.value || '').trim();
 
-    if (!newPassword) return setError('Please provide a new password.');
-    if (!newPasswordConfirm) return setError('Please confirm your password.');
-    if (newPassword !== newPasswordConfirm)
-      return setError('Passwords do not match.');
+    if (!newPassword) {
+      setError('Please provide a new password.');
+      return;
+    }
+
+    if (!newPasswordConfirm) {
+      setError('Please confirm your password.');
+      return;
+    }
+
+    if (newPassword !== newPasswordConfirm) {
+      setError('Passwords do not match.');
+      return;
+    }
 
     try {
-      const res = await fetch(`/api/v1/auth/reset-password/${encodeURIComponent(token)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newPassword, newPasswordConfirm })
-      });
+      const res = await csrfFetch(
+        `/api/v1/auth/reset-password/${encodeURIComponent(token)}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newPassword, newPasswordConfirm })
+        }
+      );
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        throw new Error(data?.message || 'Reset failed');
+        const msg = data?.message || data?.error?.message || `Reset failed (${res.status})`;
+        throw new Error(msg);
       }
 
       setOk('Password reset successful. Redirecting…');
 
       setTimeout(() => {
-        window.location.href = '/';
+        window.location.assign('/login');
       }, 800);
-
     } catch (err) {
-      setError(err.message);
+      setError(err && err.message ? err.message : 'Reset failed.');
     }
   });
 })();

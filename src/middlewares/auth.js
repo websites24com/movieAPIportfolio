@@ -1,18 +1,18 @@
 // src/middleware/auth.js
 //
 // PURPOSE:
-// This middleware "protects" routes.
-// It allows access ONLY if a valid JWT is provided either:
-// 1) in the Authorization header:  Authorization: Bearer <token>
+// Protect routes. Allow access ONLY if a valid JWT is provided either:
+// 1) Authorization header:  Authorization: Bearer <token>
 // OR
-// 2) in the HttpOnly cookie:       jwt=<token>
+// 2) HttpOnly cookie:       jwt=<token>
 //
 // After verification it will:
 // - load the user from DB
-// - check that the user is still active
-// - ✅ FIX: invalidate token if password was changed after token was issued
+// - check user is active
+// - invalidate token if password was changed after token was issued
 // - attach the user to req.user
-// - call next() so the request can continue
+// - attach decoded token to req.auth
+// - call next()
 
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
@@ -44,14 +44,17 @@ exports.protect = catchAsync(async (req, res, next) => {
 
   let decoded;
   try {
-    decoded = jwt.verify(token, process.env.JWT_SECRET);
+    decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
+
+    if (!decoded || !decoded.id) {
+      return next(new AppError('Invalid token payload. Please log in again.', 401));
+    }
   } catch (err) {
     return next(new AppError('Invalid or expired token. Please log in again.', 401));
   }
 
-  // 5) Load user from DB
-  // ✅ FIX: include password_changed_at so we can invalidate old tokens
-  const result = await db.query(
+  // 5) Load user from DB (include password_changed_at for token invalidation)
+  const [rows] = await db.query(
     `SELECT
        id, name, email, role, provider, active, created_at,
        password_changed_at
@@ -61,35 +64,29 @@ exports.protect = catchAsync(async (req, res, next) => {
     [decoded.id]
   );
 
-  const user = result[0][0];
+  const user = rows[0];
 
   if (!user) {
     return next(new AppError('The user belonging to this token no longer exists.', 401));
   }
 
-  // 6) Active check
-  if (user.active !== 1) {
+  // 6) Active check (handle string/number)
+  if (Number(user.active) !== 1) {
     return next(new AppError('This account is disabled.', 403));
   }
 
-  // ✅ FIX (SECURITY): invalidate token if password was changed after token was issued
-  //
-  // Why: if someone stole a JWT, they could keep using it even after the user changes
-  // their password, unless we force old tokens to die.
-  //
-  // decoded.iat = token issued-at time (seconds since epoch).
-  // user.password_changed_at = datetime from DB.
-  if (user.password_changed_at) {
+  // 7) Invalidate token if password changed after token was issued
+  if (user.password_changed_at && decoded.iat) {
     const tokenIssuedAtMs = decoded.iat * 1000;
     const passwordChangedAtMs = new Date(user.password_changed_at).getTime();
 
-    // 1s buffer avoids "same-second" edge cases between JWT iat and DB NOW()
+    // 1s buffer avoids "same-second" edge cases
     if (passwordChangedAtMs > tokenIssuedAtMs + 1000) {
       return next(new AppError('Password was changed recently. Please log in again.', 401));
     }
   }
 
-  // 7) Attach
+  // 8) Attach user and token payload
   req.user = user;
   req.auth = decoded;
 

@@ -1,8 +1,7 @@
 (function () {
-  const form = document.getElementById('reset-form');
+  const form = document.getElementById('forgot-form');
   const errorBox = document.getElementById('error');
   const okBox = document.getElementById('ok');
-  const token = String(document.getElementById('resetToken')?.value || '').trim();
 
   function setError(msg) {
     if (errorBox) errorBox.textContent = msg || '';
@@ -22,53 +21,36 @@
     setError('');
     setOk('');
 
-    if (!token) {
-      setError('Reset token is missing. Please use the email link again.');
-      return;
-    }
+    const email = String(form.elements.email?.value || '').trim().toLowerCase();
 
-    const newPassword = String(form.elements.newPassword?.value || '').trim();
-    const newPasswordConfirm = String(form.elements.newPasswordConfirm?.value || '').trim();
-
-    if (!newPassword) {
-      setError('Please provide a new password.');
-      return;
-    }
-
-    if (!newPasswordConfirm) {
-      setError('Please confirm your password.');
-      return;
-    }
-
-    if (newPassword !== newPasswordConfirm) {
-      setError('Passwords do not match.');
+    if (!email) {
+      setError('Please provide your email.');
       return;
     }
 
     try {
-      const res = await csrfFetch(
-        `/api/v1/auth/reset-password/${encodeURIComponent(token)}`,
-        {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ newPassword, newPasswordConfirm })
-        }
-      );
+      // IMPORTANT: csrfFetch adds the x-csrf-token header automatically
+      const res = await csrfFetch('/api/v1/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
 
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        const msg = data?.message || data?.error?.message || `Reset failed (${res.status})`;
+        const msg = data?.message || data?.error?.message || `Request failed (${res.status})`;
         throw new Error(msg);
       }
 
-      setOk('Password reset successful. Redirecting…');
+      const successMessage =
+        data?.data?.message ||
+        data?.message ||
+        'If that email exists, a reset link has been sent.';
 
-      setTimeout(() => {
-        window.location.assign('/login');
-      }, 800);
+      setOk(successMessage);
     } catch (err) {
-      setError(err && err.message ? err.message : 'Reset failed.');
+      setError(err && err.message ? err.message : 'Request failed.');
     }
   });
 })();

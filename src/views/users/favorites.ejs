@@ -1,0 +1,25 @@
+<%- include('../partials/header', {
+  title: 'Favorites',
+  pageTitle: 'My Favorites'
+}) %>
+
+<% if (!favorites || favorites.length === 0) { %>
+  <div>No favorites.</div>
+<% } else { %>
+
+  <div>
+    <% favorites.forEach(function(movie) { %>
+      <div>
+        <div><strong>ID:</strong> <%= movie.id %></div>
+        <div><strong>Title:</strong> <%= movie.title %></div>
+        <div><strong>Poster path (DB):</strong> <%= movie.poster_path || 'NULL' %></div>
+        <div><strong>Release date:</strong> <%= movie.release_date || '-' %></div>
+        <div><strong>Favorited at:</strong> <%= movie.favorited_at || '-' %></div>
+        <hr>
+      </div>
+    <% }) %>
+  </div>
+
+<% } %>
+
+<%- include('../partials/footer') %>

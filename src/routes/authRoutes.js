@@ -19,8 +19,8 @@ router.post('/google', requireCsrf, authController.googleAuth);
 // Password reset flow
 // (optional CSRF; not required for correctness)
 // ====================
-router.post('/forgot-password', authController.forgotPassword);
-router.patch('/reset-password/:token', authController.resetPassword);
+router.post('/forgot-password', requireCsrf, authController.forgotPassword);
+router.patch('/reset-password/:token', requireCsrf, authController.resetPassword);
 
 // ====================
 // Cookie-authenticated + state-changing

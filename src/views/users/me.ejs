@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>My Account</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+
+  <h1>My Account</h1>
+
+  <% if (!user) { %>
+
+    <p>You are not logged in.</p>
+
+  <% } else { %>
+
+    <div>
+      <img
+        src="<%= user.avatar_url ? user.avatar_url : '/uploads/avatars/default.webp' %>"
+        alt="<%= user.avatar_alt ? user.avatar_alt : (user.name + ' profile photo') %>"
+        title="<%= user.avatar_title ? user.avatar_title : user.name %>"
+        width="160"
+        height="160"
+      >
+    </div>
+
+    <p>
+      <strong>Name:</strong>
+      <%= user.name %>
+    </p>
+
+    <p>
+      <strong>Email:</strong>
+      <%= user.email %>
+    </p>
+
+    <p>
+      <strong>Role:</strong>
+      <%= user.role %>
+    </p>
+
+    <p>
+      <strong>Provider:</strong>
+      <%= user.provider %>
+    </p>
+
+    <p>
+      <strong>Account status:</strong>
+      <%= user.active === 1 ? 'Active' : 'Disabled' %>
+    </p>
+
+    <p>
+      <strong>Created at:</strong>
+      <%= new Date(user.created_at).toLocaleString() %>
+    </p>
+
+  <% } %>
+
+</body>
+</html>

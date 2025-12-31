@@ -16,7 +16,9 @@ const globalErrorHandler = require('./controllers/errorController');
 const movieRoutes = require('./routes/movieRoutes');
 const authRoutes = require('./routes/authRoutes');
 const viewRoutes = require('./routes/viewRoutes');
+const userRoutes = require('./routes/userRoutes');
 const healthRoutes = require('./routes/healthRoutes');
+const favoriteRoutes = require('./routes/favouriteRoutes.js');
 
 const app = express();
 
@@ -103,6 +105,8 @@ app.use('/', healthRoutes);
 app.use('/api/v1', healthRoutes);
 app.use('/api/v1/movies', movieRoutes);
 app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/users', userRoutes);
+app.use('/api/v1/favorites', favoriteRoutes)
 app.use('/', viewRoutes);
 
 // -------------------- 404 (EXPRESS 5) --------------------
