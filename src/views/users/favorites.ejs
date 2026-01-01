@@ -3,6 +3,9 @@
   pageTitle: 'My Favorites'
 }) %>
 
+<% const p = pagination || null; %>
+
+
 <% if (!favorites || favorites.length === 0) { %>
   <div>No favorites.</div>
 <% } else { %>
@@ -21,5 +24,33 @@
   </div>
 
 <% } %>
+
+<!-- Paginaion -->
+
+<% if (p && p.totalPages > 1) { %>
+  <nav aria-label="Favorites pagination">
+    <div style="display:flex; gap:12px; align-items:center; margin-top:16px;">
+      
+      <% if (p.hasPrev) { %>
+        <a href="?page=<%= p.prevPage %>&limit=<%= p.limit %>">Prev</a>
+      <% } else { %>
+        <span style="opacity:0.5;">Prev</span>
+      <% } %>
+
+      <span>
+        Page <strong><%= p.page %></strong> of <strong><%= p.totalPages %></strong>
+        (showing <%= p.from %>-<%= p.to %> of <%= p.total %>)
+      </span>
+
+      <% if (p.hasNext) { %>
+        <a href="?page=<%= p.nextPage %>&limit=<%= p.limit %>">Next</a>
+      <% } else { %>
+        <span style="opacity:0.5;">Next</span>
+      <% } %>
+
+    </div>
+  </nav>
+<% } %>
+
 
 <%- include('../partials/footer') %>

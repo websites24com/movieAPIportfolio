@@ -8,6 +8,8 @@
 const db = require('../config/db');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
+const { paginateQuery } = require('../utils/paginateQuery');
+
 
 /**
  * GET /api/v1/favorites
@@ -159,20 +161,35 @@ exports.loadFavorites = catchAsync(async (req, res, next) => {
     return res.redirect('/login');
   }
 
-  const [favorites] = await db.query(
-    `SELECT
-       m.id,
-       m.title,
-       m.poster_path,
-       m.release_date,
-       f.created_at AS favorited_at
-     FROM favorite_movies f
-     INNER JOIN movies m ON m.id = f.movie_id
-     WHERE f.user_id = ?
-     ORDER BY f.created_at DESC`,
-    [user.id]
-  );
+  const baseSql = `
+    SELECT
+      m.id,
+      m.title,
+      m.poster_path,
+      m.release_date,
+      f.created_at AS favorited_at
+    FROM favorite_movies f
+    INNER JOIN movies m ON m.id = f.movie_id
+    WHERE f.user_id = ?
+    ORDER BY f.created_at DESC
+  `;
 
-  res.locals.favorites = favorites;
+  const countSql = `
+    SELECT COUNT(*) AS total
+    FROM favorite_movies f
+    WHERE f.user_id = ?
+  `;
+
+  const { rows, meta } = await paginateQuery({
+    reqQuery: req.query,
+    db,
+    baseSql,
+    countSql,
+    params: [user.id],
+  });
+
+  res.locals.favorites = rows;
+  res.locals.pagination = meta; // expose meta to EJS
   next();
 });
+

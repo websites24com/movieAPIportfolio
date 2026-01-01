@@ -78,9 +78,18 @@ router.get('/me', (req, res, next) => {
 router.get('/users/favorites', favoriteController.loadFavorites,
 (req,res) => {
   return res.status(200).render('users/favorites', {
-    favorites: res.locals.favorites
+    favorites: res.locals.favorites,
+    pagination: res.locals.pagination
   })
 })
+
+// --------------------
+// MOVIES (LIST PAGE)
+// --------------------
+router.get('/movies', (req, res) => {
+  res.status(200).render('movies/index');
+});
+
 
 
 module.exports = router;
